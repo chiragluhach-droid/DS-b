@@ -3,13 +3,21 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
 import { verifyRefreshToken } from '../../utils/jwt';
 import { recordAudit } from '../../utils/audit';
+import { env } from '../../config/env';
 import { User } from '../../models';
 import * as service from './auth.service';
 
+/**
+ * In production the API (Railway) and the web app (Vercel) are different
+ * sites, so the session cookie must be SameSite=None or the browser will not
+ * send it on API calls — and SameSite=None is only honoured on a Secure
+ * cookie. Locally both sides are localhost, where Lax works and Secure would
+ * stop the cookie being set over plain http.
+ */
 const COOKIE_BASE = {
   httpOnly: true as const,
-  sameSite: 'lax' as const,
-  secure: process.env.NODE_ENV === 'production',
+  sameSite: (env.isProd ? 'none' : 'lax') as 'none' | 'lax',
+  secure: env.isProd,
   path: '/',
 };
 
