@@ -18,6 +18,9 @@ import {
   IDonationItemSnapshot,
   splitPrice,
   DEFAULT_CUSTOMER_SHARE_PERCENT,
+  Batch,
+  BatchEvent,
+  BatchReceipt,
 } from '../models';
 import { generateDonationId, generateToken, generateQrToken } from '../utils/ids';
 import { images, menuItems, donorPool, donorMessages } from './data';
@@ -65,6 +68,9 @@ async function wipe() {
     Payment.deleteMany({}),
     RestaurantNgoRelationship.deleteMany({}),
     AuditLog.deleteMany({}),
+    Batch.deleteMany({}),
+    BatchEvent.deleteMany({}),
+    BatchReceipt.deleteMany({}),
   ]);
   console.log('  · cleared existing collections');
 }
@@ -388,6 +394,47 @@ async function run() {
   await Ngo.findByIdAndUpdate(ngo._id, {
     stats: { portionsReceived: ngoTotals.portions, donationsConfirmed: ngoTotals.confirmed },
   });
+
+  /* ---------------------------------------------------------------- Batches */
+  const batchDefinitions: Array<{ status: any; qty: number; target: number; itemIdx: number; received?: number }> = [
+    { status: 'IN_PROGRESS', qty: 22, target: 40, itemIdx: 0 },
+    { status: 'READY_FOR_DELIVERY', qty: 40, target: 40, itemIdx: 1 },
+    { status: 'DISPATCHED', qty: 40, target: 40, itemIdx: 2 },
+    { status: 'COMPLETED', qty: 40, target: 40, itemIdx: 3 },
+    { status: 'RECONCILIATION_REQUIRED', qty: 40, target: 40, itemIdx: 4, received: 35 },
+  ];
+
+  for (const bDef of batchDefinitions) {
+    const item = items[bDef.itemIdx];
+    const bId = generateToken(8).toUpperCase();
+    const b = await Batch.create({
+      batchId: bId,
+      restaurant: restaurant._id,
+      ngo: ngo._id,
+      menuItem: item._id,
+      itemName: item.name,
+      targetQuantity: bDef.target,
+      collectedQuantity: bDef.qty,
+      donationCount: Math.ceil(bDef.qty / 2),
+      status: bDef.status,
+      dispatchedQuantity: bDef.status !== 'IN_PROGRESS' && bDef.status !== 'READY_FOR_DELIVERY' ? bDef.qty : 0,
+      receivedQuantity: bDef.received ? bDef.received : (bDef.status === 'COMPLETED' ? bDef.qty : 0),
+      createdAt: daysAgo(5, 10),
+      dispatchedAt: bDef.status === 'DISPATCHED' || bDef.status === 'COMPLETED' || bDef.status === 'RECONCILIATION_REQUIRED' ? daysAgo(2, 11) : undefined,
+      receivedAt: bDef.status === 'COMPLETED' || bDef.status === 'RECONCILIATION_REQUIRED' ? daysAgo(1, 12) : undefined,
+    });
+    
+    const relatedDonations = await Donation.find({ 'items.menuItem': item._id, status: 'ASSIGNED_TO_BATCH' });
+    for (const donation of relatedDonations) {
+      donation.items.forEach((i: any) => {
+        if (i.menuItem.toString() === item._id.toString()) {
+          i.batch = b._id;
+        }
+      });
+      await donation.save();
+    }
+  }
+  console.log(`  · 5 batches created across lifecycle`);
 
   console.log(`  · ${plan.length} donations seeded across the full lifecycle`);
 

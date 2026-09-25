@@ -52,7 +52,7 @@ export const overview = asyncHandler(async (_req: Request, res: Response) => {
         },
       },
     ]),
-    Donation.countDocuments({ 'discrepancy.hasDiscrepancy': true, 'discrepancy.resolvedAt': null }),
+    Batch.countDocuments({ status: 'RECONCILIATION_REQUIRED' }),
   ]);
 
   const since = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000);
@@ -159,10 +159,9 @@ export const listUsers = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const listDonations = asyncHandler(async (req: Request, res: Response) => {
-  const { status, flagged } = req.query as Record<string, string>;
+  const { status } = req.query as Record<string, string>;
   const query: Record<string, unknown> = { isPaid: true };
   if (status && status !== 'all') query.status = status;
-  if (flagged === 'true') query['discrepancy.hasDiscrepancy'] = true;
 
   const donations = await Donation.find(query)
     .populate({ path: 'restaurant', select: 'name slug' })
@@ -171,6 +170,21 @@ export const listDonations = asyncHandler(async (req: Request, res: Response) =>
     .limit(200)
     .lean();
   res.json({ success: true, data: { donations } });
+});
+
+export const listBatches = asyncHandler(async (req: Request, res: Response) => {
+  const { status, flagged } = req.query as Record<string, string>;
+  const query: Record<string, unknown> = {};
+  if (status && status !== 'all') query.status = status;
+  if (flagged === 'true') query.status = 'RECONCILIATION_REQUIRED';
+
+  const batches = await Batch.find(query)
+    .populate({ path: 'restaurant', select: 'name slug' })
+    .populate({ path: 'ngo', select: 'name slug' })
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+  res.json({ success: true, data: { batches } });
 });
 
 export const listPayments = asyncHandler(async (_req: Request, res: Response) => {

@@ -21,4 +21,6 @@ router.patch(
 );
 router.get('/audit-logs', controller.listAuditLogs);
 
+router.get('/batches', controller.listBatches);
+
 export default router;
