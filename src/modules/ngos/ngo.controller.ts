@@ -49,10 +49,10 @@ export const incomingDonations = asyncHandler(async (req: Request, res: Response
     .limit(100)
     .lean();
 
-  const open = donations.filter((d) => d.status !== 'NGO_CONFIRMED');
+  const open = donations.filter((d) => d.status === 'ASSIGNED_TO_BATCH');
   const summary = {
-    awaitingConfirmation: donations.filter((d) => d.status === 'HANDED_OVER').length,
-    beingPrepared: donations.filter((d) => d.status === 'DONATED').length,
+    awaitingConfirmation: 0,
+    beingPrepared: donations.filter((d) => d.status === 'ASSIGNED_TO_BATCH').length,
     portionsExpected: open.reduce((sum, d) => sum + d.totalPortions, 0),
     foodValueExpectedPaise: open.reduce((sum, d) => sum + d.totalFoodValuePaise, 0),
   };

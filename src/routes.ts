@@ -6,6 +6,7 @@ import donationRoutes from './modules/donations/donation.routes';
 import paymentRoutes from './modules/payments/payment.routes';
 import ngoRoutes from './modules/ngos/ngo.routes';
 import adminRoutes from './modules/admin/admin.routes';
+import batchRoutes from './modules/batches/batch.routes';
 
 const router = Router();
 
@@ -20,5 +21,6 @@ router.use('/donations', donationRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/ngos', ngoRoutes);
 router.use('/admin', adminRoutes);
+router.use('/batches', batchRoutes);
 
 export default router;

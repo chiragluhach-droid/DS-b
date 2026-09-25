@@ -4,7 +4,6 @@ import { optionalAuth, requireAuth, requireRole } from '../../middleware/auth';
 import {
   createDonationSchema,
   advanceStatusSchema,
-  ngoConfirmSchema,
   assignNgoSchema,
 } from './donation.schema';
 import * as controller from './donation.controller';
@@ -23,13 +22,7 @@ router.patch(
   controller.advance
 );
 
-router.patch(
-  '/:donationId/confirm',
-  requireAuth,
-  requireRole('ngo', 'admin'),
-  validate(ngoConfirmSchema),
-  controller.confirmByNgo
-);
+
 
 router.patch(
   '/:donationId/ngo',

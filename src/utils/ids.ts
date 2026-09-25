@@ -14,6 +14,10 @@ export function generateDonationId(): string {
   return `DS-${randomCode(4)}-${randomCode(4)}`;
 }
 
+export function generateBatchId(): string {
+  return `BAT-${randomCode(4)}-${randomCode(4)}`;
+}
+
 export function generateToken(bytes = 24): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }

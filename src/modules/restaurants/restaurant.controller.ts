@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import QRCode from 'qrcode';
 import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -51,12 +52,18 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
     .select('donationId donorSnapshot totalPortions totalFoodValuePaise createdAt status')
     .lean();
 
+  const activeBatches = await mongoose.model('Batch').find({
+    restaurant: restaurant._id,
+    status: 'IN_PROGRESS'
+  }).select('batchId menuItem targetQuantity collectedQuantity').lean();
+
   res.json({
     success: true,
     data: {
       restaurant,
       items,
       partners: partnerships.map((p) => p.ngo),
+      activeBatches,
       recentDonations: recent.map((d) => ({
         donationId: d.donationId,
         totalPortions: d.totalPortions,

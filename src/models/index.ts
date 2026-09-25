@@ -8,3 +8,6 @@ export * from './DonationEvent';
 export * from './Payment';
 export * from './RestaurantNgoRelationship';
 export * from './AuditLog';
+export * from './Batch';
+export * from './BatchEvent';
+export * from './BatchReceipt';

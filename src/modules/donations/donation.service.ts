@@ -11,28 +11,37 @@ import {
   DONATION_STATUSES,
   DonationStatus,
   AnyDonationStatus,
-  STATUS_ACTOR,
   splitPrice,
   Role,
+  Batch,
 } from '../../models';
+import { generateBatchId } from '../../utils/ids';
 import { ApiError } from '../../utils/ApiError';
 import { generateDonationId } from '../../utils/ids';
 import { CreateDonationInput } from './donation.schema';
 
 const STATUS_INDEX = new Map<string, number>(DONATION_STATUSES.map((s, i) => [s, i]));
 
-const EVENT_COPY: Record<DonationStatus, { title: string; note: string }> = {
-  DONATED: {
-    title: 'Donation received',
-    note: 'Your contribution was received and the restaurant has been notified.',
+const EVENT_COPY: Partial<Record<AnyDonationStatus, { title: string; note: string }>> = {
+  PENDING_PAYMENT: {
+    title: 'Payment Pending',
+    note: 'Waiting for payment confirmation.',
   },
-  HANDED_OVER: {
-    title: 'Handed over to NGO',
-    note: 'The kitchen cooked your dishes and handed them to the NGO.',
+  PAYMENT_SUCCESS: {
+    title: 'Payment Successful',
+    note: 'Your contribution was received successfully.',
   },
-  NGO_CONFIRMED: {
-    title: 'Confirmed by NGO',
-    note: 'The NGO verified what they received. Your donation is complete.',
+  ASSIGNED_TO_BATCH: {
+    title: 'Assigned to Batch',
+    note: 'Your donation has been assigned to a delivery batch.',
+  },
+  REFUNDED: {
+    title: 'Refunded',
+    note: 'Your donation was refunded.',
+  },
+  FAILED: {
+    title: 'Failed',
+    note: 'Your payment failed.',
   },
 };
 
@@ -60,9 +69,6 @@ export function assertValidTransition(
     throw ApiError.badRequest(
       `The next step for this donation is "${DONATION_STATUSES[currentIdx + 1]}", not "${next}".`
     );
-  }
-  if (!STATUS_ACTOR[next].includes(role)) {
-    throw ApiError.forbidden(`A ${role} cannot move a donation to ${next}.`);
   }
 }
 
@@ -173,7 +179,7 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
     customerPaidPaise,
     restaurantContributionPaise,
     totalFoodValuePaise,
-    status: 'DONATED',
+    status: 'PENDING_PAYMENT',
     isPaid: false,
     timestamps_: {},
   });
@@ -186,11 +192,11 @@ export async function markDonationPaid(donation: IDonation) {
   if (donation.isPaid) return donation;
 
   donation.isPaid = true;
-  donation.status = 'DONATED';
-  donation.timestamps_ = { ...donation.timestamps_, DONATED: new Date() };
+  donation.status = 'PAYMENT_SUCCESS';
+  donation.timestamps_ = { ...donation.timestamps_, PAYMENT_SUCCESS: new Date() };
   await donation.save();
 
-  await appendEvent({ donation, status: 'DONATED' });
+  await appendEvent({ donation, status: 'PAYMENT_SUCCESS' });
 
   await Restaurant.findByIdAndUpdate(donation.restaurant, {
     $inc: {
@@ -201,6 +207,45 @@ export async function markDonationPaid(donation: IDonation) {
       'stats.totalFoodValuePaise': donation.totalFoodValuePaise,
     },
   });
+
+  // Assign to a batch
+  const primaryItem = donation.items[0]; // Assuming 1 type of item per donation for V1
+  if (primaryItem && donation.ngo) {
+    const menuItem = await MenuItem.findById(primaryItem.menuItem);
+    const targetQuantity = menuItem?.batchTarget || 40;
+
+    let batch = await Batch.findOne({
+      restaurant: donation.restaurant,
+      ngo: donation.ngo,
+      menuItem: primaryItem.menuItem,
+      status: 'IN_PROGRESS',
+    });
+
+    if (!batch) {
+      batch = await Batch.create({
+        batchId: generateBatchId(),
+        restaurant: donation.restaurant,
+        ngo: donation.ngo,
+        menuItem: primaryItem.menuItem,
+        targetQuantity,
+        collectedQuantity: 0,
+      });
+    }
+
+    batch.collectedQuantity += donation.totalPortions;
+    if (batch.collectedQuantity >= batch.targetQuantity) {
+      batch.status = 'READY_FOR_DELIVERY';
+      batch.readyAt = new Date();
+    }
+    await batch.save();
+
+    donation.items[0].batch = batch._id;
+    donation.status = 'ASSIGNED_TO_BATCH';
+    donation.timestamps_ = { ...donation.timestamps_, ASSIGNED_TO_BATCH: new Date() };
+    await donation.save();
+    
+    await appendEvent({ donation, status: 'ASSIGNED_TO_BATCH' });
+  }
 
   return donation;
 }
@@ -233,55 +278,6 @@ export async function advanceStatus(
   return donation;
 }
 
-export async function ngoConfirm(
-  donationId: string,
-  portionsReceived: number,
-  actor: { id: string; role: Role; name: string },
-  note?: string
-) {
-  const donation = await Donation.findOne({ donationId });
-  if (!donation) throw ApiError.notFound('Donation not found.');
-  if (donation.status !== 'HANDED_OVER') {
-    throw ApiError.badRequest('This donation must be handed over before it can be confirmed.');
-  }
-
-  const hasDiscrepancy = portionsReceived !== donation.totalPortions;
-
-  donation.portionsReceived = portionsReceived;
-  donation.status = 'NGO_CONFIRMED';
-  donation.timestamps_ = { ...donation.timestamps_, NGO_CONFIRMED: new Date() };
-  if (hasDiscrepancy) {
-    donation.discrepancy = {
-      hasDiscrepancy: true,
-      reportedBy: new mongoose.Types.ObjectId(actor.id),
-      note: note ?? `Expected ${donation.totalPortions} portions, received ${portionsReceived}.`,
-      reportedAt: new Date(),
-    };
-  }
-  await donation.save();
-
-  await appendEvent({
-    donation,
-    status: 'NGO_CONFIRMED',
-    note:
-      note ??
-      (hasDiscrepancy
-        ? `Received ${portionsReceived} of ${donation.totalPortions} expected portions. Flagged for review.`
-        : `All ${portionsReceived} portions were received and served.`),
-    actorId: actor.id,
-    actorRole: actor.role,
-    actorName: actor.name,
-    metadata: { portionsReceived, expected: donation.totalPortions, hasDiscrepancy },
-  });
-
-  if (donation.ngo) {
-    await Ngo.findByIdAndUpdate(donation.ngo, {
-      $inc: { 'stats.portionsReceived': portionsReceived, 'stats.donationsConfirmed': 1 },
-    });
-  }
-
-  return donation;
-}
 
 export async function assignNgo(donationId: string, ngoId: string) {
   const ngo = await Ngo.findById(ngoId);
@@ -294,5 +290,36 @@ export async function assignNgo(donationId: string, ngoId: string) {
 }
 
 export async function getTimeline(donationObjectId: mongoose.Types.ObjectId) {
-  return DonationEvent.find({ donation: donationObjectId }).sort({ createdAt: 1 }).lean();
+  const donation = await Donation.findById(donationObjectId).lean();
+  if (!donation) return [];
+
+  const donationEvents = await DonationEvent.find({ donation: donationObjectId }).sort({ createdAt: 1 }).lean();
+  
+  if (!donation.items[0]?.batch) {
+    return donationEvents;
+  }
+
+  const batchEvents = await mongoose.model('BatchEvent').find({ batch: donation.items[0].batch }).sort({ createdAt: 1 }).lean();
+  
+  // Map BatchEvents to DonationEvent shape
+  const mappedBatchEvents = batchEvents.map((be: any) => {
+    let status = be.toStatus;
+    if (status === 'READY_FOR_DELIVERY' || status === 'IN_PROGRESS') status = 'ASSIGNED_TO_BATCH';
+    if (status === 'RECONCILIATION_REQUIRED' || status === 'COMPLETED') status = 'NGO_CONFIRMED';
+    
+    return {
+      _id: be._id,
+      donation: donationObjectId,
+      status,
+      title: be.note || status,
+      note: be.note,
+      actorType: be.actorType,
+      actorId: be.actorId,
+      createdAt: be.createdAt
+    };
+  });
+
+  return [...donationEvents, ...mappedBatchEvents].sort((a: any, b: any) => 
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
 }

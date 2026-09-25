@@ -15,7 +15,7 @@ router.get('/users', controller.listUsers);
 router.get('/donations', controller.listDonations);
 router.get('/payments', controller.listPayments);
 router.patch(
-  '/donations/:donationId/discrepancy',
+  '/batches/:batchId/discrepancy',
   validate(controller.resolveDiscrepancySchema),
   controller.resolveDiscrepancy
 );

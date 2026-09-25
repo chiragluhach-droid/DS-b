@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { DEFAULT_CUSTOMER_SHARE_PERCENT } from './types';
+import { DEFAULT_BATCH_TARGET, DEFAULT_CUSTOMER_SHARE_PERCENT } from './types';
 
 export interface IMenuItem extends Document {
   _id: Types.ObjectId;
@@ -10,6 +10,8 @@ export interface IMenuItem extends Document {
   mrpPaise: number;
   /** Percentage of the MRP the guest pays. The restaurant covers the rest. */
   customerSharePercent: number;
+  /** The target number of portions for a batch of this item. */
+  batchTarget: number;
   image?: string;
   category: string;
   isVeg: boolean;
@@ -32,6 +34,12 @@ const menuItemSchema = new Schema<IMenuItem>(
       default: DEFAULT_CUSTOMER_SHARE_PERCENT,
       min: 1,
       max: 100,
+    },
+    batchTarget: {
+      type: Number,
+      default: DEFAULT_BATCH_TARGET,
+      min: 1,
+      max: 1000,
     },
     image: { type: String },
     category: { type: String, default: 'Dosa', trim: true },

@@ -2,12 +2,15 @@ import jwt, { SignOptions } from 'jsonwebtoken';
 import { env } from '../config/env';
 import { Role } from '../models/types';
 
+/**
+ * Identity only. Role, restaurant and NGO links are re-read from the database on
+ * every request (middleware/auth), so a token never grants more than the account
+ * currently has.
+ */
 export interface JwtPayload {
   sub: string;
   role: Role;
   email: string;
-  restaurant?: string;
-  ngo?: string;
 }
 
 export function signAccessToken(payload: JwtPayload): string {

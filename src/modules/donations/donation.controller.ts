@@ -9,6 +9,7 @@ import * as service from './donation.service';
 const POPULATE = [
   { path: 'restaurant', select: 'name slug city address logoImage coverImage phone tagline' },
   { path: 'ngo', select: 'name slug logoImage address mission website' },
+  { path: 'items.batch', select: 'batchId targetQuantity collectedQuantity status' }
 ];
 
 async function actorFrom(req: Request) {
@@ -47,12 +48,14 @@ export const track = asyncHandler(async (req: Request, res: Response) => {
   if (!donation) throw ApiError.notFound('We could not find a donation with that ID.');
 
   const timeline = await service.getTimeline(donation._id as mongoose.Types.ObjectId);
+  const effectiveStatus = timeline.length > 0 ? timeline[timeline.length - 1].status : donation.status;
 
   res.json({
     success: true,
     data: {
       donation: {
         ...donation,
+        status: effectiveStatus,
         // The tracking page is public — the donor's contact details never leave
         // the server with it.
         donorSnapshot: {
@@ -88,7 +91,7 @@ export const myDonations = asyncHandler(async (req: Request, res: Response) => {
       acc.customerPaidPaise += d.customerPaidPaise;
       acc.foodValuePaise += d.totalFoodValuePaise;
       acc.count += 1;
-      if (d.status === 'NGO_CONFIRMED') acc.completed += 1;
+      if (d.status === 'ASSIGNED_TO_BATCH') acc.completed += 1;
       return acc;
     },
     { portions: 0, customerPaidPaise: 0, foodValuePaise: 0, count: 0, completed: 0 }
@@ -120,23 +123,8 @@ export const advance = asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true, data: { donation } });
 });
 
-export const confirmByNgo = asyncHandler(async (req: Request, res: Response) => {
-  const actor = await actorFrom(req);
-  const donation = await service.ngoConfirm(
-    req.params.donationId,
-    req.body.portionsReceived,
-    actor,
-    req.body.note
-  );
-  await recordAudit({
-    req,
-    action: 'donation.ngo_confirm',
-    entityType: 'Donation',
-    entityId: donation.donationId,
-    after: { portionsReceived: donation.portionsReceived },
-  });
-  res.json({ success: true, data: { donation } });
-});
+
+
 
 export const assignNgo = asyncHandler(async (req: Request, res: Response) => {
   const donation = await service.assignNgo(req.params.donationId, req.body.ngoId);

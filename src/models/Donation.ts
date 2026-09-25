@@ -17,6 +17,8 @@ export interface IDonationItemSnapshot {
   lineCustomerPaise: number;
   lineRestaurantPaise: number;
   lineFoodValuePaise: number;
+  /** The batch this line's portions are cooked in. Set once the donation is paid. */
+  batch?: Types.ObjectId;
 }
 
 export interface IDonation extends Document {
@@ -46,16 +48,6 @@ export interface IDonation extends Document {
   status: AnyDonationStatus;
   payment?: Types.ObjectId;
   isPaid: boolean;
-  /** Portions the NGO says actually arrived. Undefined until they confirm. */
-  portionsReceived?: number;
-  discrepancy?: {
-    hasDiscrepancy: boolean;
-    reportedBy?: Types.ObjectId;
-    note?: string;
-    reportedAt?: Date;
-    resolvedAt?: Date;
-    resolutionNote?: string;
-  };
   timestamps_: Partial<Record<AnyDonationStatus, Date>>;
   createdAt: Date;
   updatedAt: Date;
@@ -74,6 +66,7 @@ const snapshotSchema = new Schema<IDonationItemSnapshot>(
     lineCustomerPaise: { type: Number, required: true },
     lineRestaurantPaise: { type: Number, required: true },
     lineFoodValuePaise: { type: Number, required: true },
+    batch: { type: Schema.Types.ObjectId, ref: 'Batch' },
   },
   { _id: false }
 );
@@ -86,7 +79,7 @@ const donationSchema = new Schema<IDonation>(
     donor: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     donorSnapshot: {
       name: { type: String, required: true },
-      phone: { type: String, required: true, index: true },
+      phone: { type: String, required: true },
       email: { type: String },
       isAnonymous: { type: Boolean, default: false },
       message: { type: String, maxlength: 400 },
@@ -99,25 +92,17 @@ const donationSchema = new Schema<IDonation>(
     status: {
       type: String,
       enum: [...DONATION_STATUSES, ...TERMINAL_STATUSES],
-      default: 'DONATED',
+      default: 'PENDING_PAYMENT',
       index: true,
     },
     payment: { type: Schema.Types.ObjectId, ref: 'Payment' },
     isPaid: { type: Boolean, default: false, index: true },
-    portionsReceived: { type: Number },
-    discrepancy: {
-      hasDiscrepancy: { type: Boolean, default: false },
-      reportedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-      note: { type: String },
-      reportedAt: { type: Date },
-      resolvedAt: { type: Date },
-      resolutionNote: { type: String },
-    },
     timestamps_: { type: Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }
 );
 
 donationSchema.index({ createdAt: -1 });
+donationSchema.index({ 'items.batch': 1 });
 
 export const Donation = model<IDonation>('Donation', donationSchema);

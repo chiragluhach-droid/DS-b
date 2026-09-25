@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
@@ -10,6 +11,7 @@ import {
   Donation,
   Payment,
   AuditLog,
+  Batch,
   APPROVAL_STATUSES,
 } from '../../models';
 
@@ -181,23 +183,28 @@ export const listPayments = asyncHandler(async (_req: Request, res: Response) =>
 });
 
 export const resolveDiscrepancy = asyncHandler(async (req: Request, res: Response) => {
-  const donation = await Donation.findOne({ donationId: req.params.donationId });
-  if (!donation) throw ApiError.notFound('Donation not found.');
-  if (!donation.discrepancy?.hasDiscrepancy) {
-    throw ApiError.badRequest('This donation has no open discrepancy.');
+  const batch = await Batch.findOne({ batchId: req.params.batchId });
+  if (!batch) throw ApiError.notFound('Batch not found.');
+  if (batch.status !== 'RECONCILIATION_REQUIRED') {
+    throw ApiError.badRequest('This batch has no open discrepancy.');
   }
-  donation.discrepancy.resolvedAt = new Date();
-  donation.discrepancy.resolutionNote = req.body.resolutionNote;
-  await donation.save();
+  
+  batch.resolution = {
+    note: req.body.resolutionNote,
+    resolvedBy: new mongoose.Types.ObjectId(req.user!.id),
+    resolvedAt: new Date()
+  };
+  batch.status = 'COMPLETED';
+  await batch.save();
 
   await recordAudit({
     req,
     action: 'discrepancy.resolve',
-    entityType: 'Donation',
-    entityId: donation.donationId,
-    after: { resolutionNote: req.body.resolutionNote },
+    entityType: 'Batch',
+    entityId: batch.batchId,
+    after: { resolutionNote: req.body.resolutionNote, status: 'COMPLETED' },
   });
-  res.json({ success: true, data: { donation } });
+  res.json({ success: true, data: { batch } });
 });
 
 export const listAuditLogs = asyncHandler(async (req: Request, res: Response) => {

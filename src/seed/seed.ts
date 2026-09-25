@@ -14,6 +14,7 @@ import {
   AuditLog,
   DONATION_STATUSES,
   DonationStatus,
+  AnyDonationStatus,
   IDonationItemSnapshot,
   splitPrice,
   DEFAULT_CUSTOMER_SHARE_PERCENT,
@@ -30,18 +31,26 @@ const daysAgo = (n: number, hour = 12) => {
   return d;
 };
 
-const EVENT_COPY: Record<DonationStatus, { title: string; note: string }> = {
-  DONATED: {
-    title: 'Donation received',
-    note: 'Your contribution was received and the restaurant has been notified.',
+const EVENT_COPY: Partial<Record<AnyDonationStatus, { title: string; note: string }>> = {
+  PENDING_PAYMENT: {
+    title: 'Payment Pending',
+    note: 'Waiting for payment confirmation.',
   },
-  HANDED_OVER: {
-    title: 'Handed over to NGO',
-    note: 'The kitchen cooked your dishes and handed them to the NGO.',
+  PAYMENT_SUCCESS: {
+    title: 'Payment Successful',
+    note: 'Your contribution was received successfully.',
   },
-  NGO_CONFIRMED: {
-    title: 'Confirmed by NGO',
-    note: 'The NGO verified what they received. Your donation is complete.',
+  ASSIGNED_TO_BATCH: {
+    title: 'Assigned to Batch',
+    note: 'Your donation has been assigned to a delivery batch.',
+  },
+  REFUNDED: {
+    title: 'Refunded',
+    note: 'Your donation was refunded.',
+  },
+  FAILED: {
+    title: 'Failed',
+    note: 'Your payment failed.',
   },
 };
 
@@ -202,17 +211,17 @@ async function run() {
     age: number;
     anon?: boolean;
   }[] = [
-    { lines: [{ idx: 2, qty: 4 }], stage: 'NGO_CONFIRMED', age: 12 },
-    { lines: [{ idx: 9, qty: 3 }, { idx: 5, qty: 2 }], stage: 'NGO_CONFIRMED', age: 9 },
-    { lines: [{ idx: 2, qty: 5 }], stage: 'NGO_CONFIRMED', age: 7, anon: true },
-    { lines: [{ idx: 5, qty: 3 }, { idx: 4, qty: 2 }], stage: 'NGO_CONFIRMED', age: 5 },
-    { lines: [{ idx: 7, qty: 3 }, { idx: 11, qty: 1 }], stage: 'NGO_CONFIRMED', age: 3 },
-    { lines: [{ idx: 2, qty: 3 }, { idx: 8, qty: 1 }], stage: 'HANDED_OVER', age: 1 },
-    { lines: [{ idx: 9, qty: 3 }], stage: 'HANDED_OVER', age: 1 },
-    { lines: [{ idx: 2, qty: 3 }, { idx: 5, qty: 2 }], stage: 'DONATED', age: 0 },
+    { lines: [{ idx: 2, qty: 4 }], stage: 'ASSIGNED_TO_BATCH', age: 12 },
+    { lines: [{ idx: 9, qty: 3 }, { idx: 5, qty: 2 }], stage: 'ASSIGNED_TO_BATCH', age: 9 },
+    { lines: [{ idx: 2, qty: 5 }], stage: 'ASSIGNED_TO_BATCH', age: 7, anon: true },
+    { lines: [{ idx: 5, qty: 3 }, { idx: 4, qty: 2 }], stage: 'ASSIGNED_TO_BATCH', age: 5 },
+    { lines: [{ idx: 7, qty: 3 }, { idx: 11, qty: 1 }], stage: 'ASSIGNED_TO_BATCH', age: 3 },
+    { lines: [{ idx: 2, qty: 3 }, { idx: 8, qty: 1 }], stage: 'ASSIGNED_TO_BATCH', age: 1 },
+    { lines: [{ idx: 9, qty: 3 }], stage: 'ASSIGNED_TO_BATCH', age: 1 },
+    { lines: [{ idx: 2, qty: 3 }, { idx: 5, qty: 2 }], stage: 'PAYMENT_SUCCESS', age: 0 },
     {
       lines: [{ idx: 9, qty: 2 }, { idx: 4, qty: 2 }, { idx: 8, qty: 2 }],
-      stage: 'DONATED',
+      stage: 'PAYMENT_SUCCESS',
       age: 0,
       anon: true,
     },
@@ -276,7 +285,7 @@ async function run() {
     // One confirmed donation arrives short, to exercise the discrepancy flow.
     const isShort = i === 2;
     const portionsReceived = isShort ? totalPortions - 2 : totalPortions;
-    const isClosed = row.stage === 'NGO_CONFIRMED';
+    const isClosed = row.stage === 'ASSIGNED_TO_BATCH';
 
     const donation = await Donation.create({
       donationId: generateDonationId(),
@@ -331,8 +340,8 @@ async function run() {
     await donation.save();
 
     for (const status of reached) {
-      const copy = EVENT_COPY[status];
-      const isFinal = status === 'NGO_CONFIRMED';
+      const copy = EVENT_COPY[status]!;
+      const isFinal = status === 'ASSIGNED_TO_BATCH';
       await DonationEvent.create({
         donation: donation._id,
         status,
@@ -342,9 +351,9 @@ async function run() {
             ? `Received ${portionsReceived} of ${totalPortions} expected portions. Flagged for review.`
             : `All ${portionsReceived} portions were received and served.`
           : copy.note,
-        actorRole: status === 'DONATED' ? 'system' : isFinal ? 'ngo' : 'restaurant',
-        actorName: status === 'DONATED' ? 'DaanSetu' : isFinal ? ngo.name : restaurant.name,
-        actor: status === 'DONATED' ? undefined : isFinal ? ngoOwner._id : restaurantOwner._id,
+        actorRole: status === 'PAYMENT_SUCCESS' ? 'system' : isFinal ? 'ngo' : 'restaurant',
+        actorName: status === 'PAYMENT_SUCCESS' ? 'DaanSetu' : isFinal ? ngo.name : restaurant.name,
+        actor: status === 'PAYMENT_SUCCESS' ? undefined : isFinal ? ngoOwner._id : restaurantOwner._id,
         createdAt: stamps[status],
         ...(isFinal
           ? { metadata: { portionsReceived, expected: totalPortions, hasDiscrepancy: isShort } }
@@ -392,7 +401,7 @@ async function run() {
     after: { approvalStatus: 'approved' },
   });
 
-  const sample = await Donation.findOne({ status: 'HANDED_OVER' }).select('donationId');
+  const sample = await Donation.findOne({ status: 'ASSIGNED_TO_BATCH' }).select('donationId');
   const rupees = (p: number) => `₹${(p / 100).toLocaleString('en-IN')}`;
 
   console.log(`
