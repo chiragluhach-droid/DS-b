@@ -227,12 +227,15 @@ export async function markDonationPaid(donation: IDonation) {
         restaurant: donation.restaurant,
         ngo: donation.ngo,
         menuItem: primaryItem.menuItem,
+        itemName: primaryItem.name,
         targetQuantity,
         collectedQuantity: 0,
+        donationCount: 0,
       });
     }
 
     batch.collectedQuantity += donation.totalPortions;
+    batch.donationCount = (batch.donationCount || 0) + 1;
     if (batch.collectedQuantity >= batch.targetQuantity) {
       batch.status = 'READY_FOR_DELIVERY';
       batch.readyAt = new Date();
