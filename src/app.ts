@@ -18,7 +18,9 @@ export function createApp() {
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin || env.corsOrigins.includes(origin)) return callback(null, true);
+        if (!origin || env.corsOrigins.includes('*') || env.corsOrigins.includes(origin)) {
+          return callback(null, true);
+        }
         callback(new Error(`Origin ${origin} is not allowed by CORS`));
       },
       credentials: true,
