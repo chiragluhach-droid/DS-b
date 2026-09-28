@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "seed": "tsx src/seed/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "NODE_ENV=test MONGODB_URI=${TEST_MONGODB_URI:-mongodb://127.0.0.1:27017/daansetu_test} tsx --test src/tests/*.test.ts",
+    "test": "NODE_ENV=test MONGODB_URI=${TEST_MONGODB_URI:-mongodb://127.0.0.1:27017/daansetu_test} tsx --test --test-concurrency=1 src/tests/*.test.ts",
     "bootstrap": "tsx src/seed/bootstrap.ts"
   },
   "dependencies": {

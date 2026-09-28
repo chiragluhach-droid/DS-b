@@ -60,8 +60,8 @@ if (isProd && !paymentsAreLive && !allowMockPayments) {
   );
 }
 
-const sameSite = (process.env.COOKIE_SAMESITE ?? 'lax').toLowerCase();
-if (!['lax', 'strict', 'none'].includes(sameSite)) {
+const sameSite = process.env.COOKIE_SAMESITE?.toLowerCase();
+if (sameSite && !['lax', 'strict', 'none'].includes(sameSite)) {
   problems.push('COOKIE_SAMESITE must be one of lax, strict, none');
 }
 
@@ -86,11 +86,12 @@ export const env = {
     .filter(Boolean),
   appPublicUrl: (process.env.APP_PUBLIC_URL ?? 'http://localhost:3000').replace(/\/$/, ''),
   /**
-   * daansetu.in and api.daansetu.in are the same *site*, so Lax cookies are sent
-   * on API calls. Only set COOKIE_SAMESITE=none if the web app and API live on
-   * unrelated domains (e.g. *.vercel.app and *.up.railway.app).
+   * Left unset, the API works this out per request: Lax when the web app and API
+   * are the same site (daansetu.in / api.daansetu.in), None when they are not
+   * (a vercel.app URL calling a railway.app one). Set COOKIE_SAMESITE only to
+   * force a particular value.
    */
-  cookieSameSite: sameSite as 'lax' | 'strict' | 'none',
+  cookieSameSite: sameSite as 'lax' | 'strict' | 'none' | undefined,
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
   razorpay,
   allowMockPayments,

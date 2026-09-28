@@ -6,37 +6,65 @@ import { verifyRefreshToken } from '../../utils/jwt';
 import { durationToMs } from '../../utils/duration';
 import { recordAudit } from '../../utils/audit';
 import { env } from '../../config/env';
+import { isSameSite } from '../../utils/site';
 import { User } from '../../models';
 import * as service from './auth.service';
 
 /**
- * daansetu.in and api.daansetu.in are the same site, so a Lax cookie is sent on
- * API calls and cannot be used by another site. COOKIE_SAMESITE=none is only for
- * a deployment where the web app and API sit on unrelated domains, and browsers
- * only honour it on a Secure cookie.
+ * How the session cookie must be written depends on where the request came from,
+ * not on a setting someone has to remember:
+ *
+ * - daansetu.in calling api.daansetu.in is one site, so a Lax cookie is sent and
+ *   no other site can use it.
+ * - a Vercel URL calling a Railway URL is two sites, and a Lax cookie would
+ *   simply never be sent back — the browser drops it, the user appears signed in
+ *   until the next request, then lands back on the sign-in page. Those need
+ *   SameSite=None, which browsers only honour on a Secure cookie.
+ *
+ * COOKIE_SAMESITE overrides this when a deployment needs something specific.
  */
-const COOKIE_BASE = {
-  httpOnly: true as const,
-  sameSite: env.cookieSameSite,
-  secure: env.isProd || env.cookieSameSite === 'none',
-  domain: env.cookieDomain,
-  path: '/',
-};
+function cookieOptions(req: Request) {
+  const origin = req.headers.origin;
+  const apiHost = req.headers.host ?? '';
+  const isHttps = req.secure || req.get('x-forwarded-proto') === 'https';
 
-function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
-  res.cookie('accessToken', accessToken, {
-    ...COOKIE_BASE,
-    maxAge: durationToMs(env.jwtExpiresIn),
-  });
+  let sameSite = env.cookieSameSite;
+  if (!sameSite) {
+    let originHost = '';
+    try {
+      originHost = origin ? new URL(origin).hostname : '';
+    } catch {
+      originHost = '';
+    }
+    // No Origin header means a same-origin or non-browser caller.
+    sameSite = !originHost || isSameSite(originHost, apiHost) ? 'lax' : 'none';
+  }
+
+  // A None cookie without Secure is discarded, and a Secure cookie is ignored
+  // over plain http — so on an insecure origin, Lax is the only thing that works.
+  if (sameSite === 'none' && !isHttps) sameSite = 'lax';
+
+  return {
+    httpOnly: true as const,
+    sameSite,
+    secure: sameSite === 'none' || (env.isProd && isHttps),
+    domain: env.cookieDomain,
+    path: '/',
+  };
+}
+
+function setAuthCookies(req: Request, res: Response, accessToken: string, refreshToken: string) {
+  const base = cookieOptions(req);
+  res.cookie('accessToken', accessToken, { ...base, maxAge: durationToMs(env.jwtExpiresIn) });
   res.cookie('refreshToken', refreshToken, {
-    ...COOKIE_BASE,
+    ...base,
     maxAge: durationToMs(env.jwtRefreshExpiresIn),
   });
 }
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const result = await service.register(req.body);
-  setAuthCookies(res, result.accessToken, result.refreshToken);
+  setAuthCookies(req, res, result.accessToken, result.refreshToken);
   await recordAudit({ req, action: 'auth.register', entityType: 'User', entityId: result.user.id });
   res.status(201).json({ success: true, data: result });
 });
@@ -44,7 +72,7 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
 /** A kitchen applies to join. Usable at once; the public page waits for approval. */
 export const registerRestaurant = asyncHandler(async (req: Request, res: Response) => {
   const result = await service.registerRestaurant(req.body);
-  setAuthCookies(res, result.accessToken, result.refreshToken);
+  setAuthCookies(req, res, result.accessToken, result.refreshToken);
   await recordAudit({
     req,
     action: 'auth.register_restaurant',
@@ -57,7 +85,7 @@ export const registerRestaurant = asyncHandler(async (req: Request, res: Respons
 
 export const registerNgo = asyncHandler(async (req: Request, res: Response) => {
   const result = await service.registerNgo(req.body);
-  setAuthCookies(res, result.accessToken, result.refreshToken);
+  setAuthCookies(req, res, result.accessToken, result.refreshToken);
   await recordAudit({
     req,
     action: 'auth.register_ngo',
@@ -70,7 +98,7 @@ export const registerNgo = asyncHandler(async (req: Request, res: Response) => {
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const result = await service.login(req.body);
-  setAuthCookies(res, result.accessToken, result.refreshToken);
+  setAuthCookies(req, res, result.accessToken, result.refreshToken);
   res.json({ success: true, data: result });
 });
 
@@ -90,13 +118,15 @@ export const refresh = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const result = await service.refresh(sub);
-  setAuthCookies(res, result.accessToken, result.refreshToken);
+  setAuthCookies(req, res, result.accessToken, result.refreshToken);
   res.json({ success: true, data: result });
 });
 
-export const logout = asyncHandler(async (_req: Request, res: Response) => {
-  res.clearCookie('accessToken', COOKIE_BASE);
-  res.clearCookie('refreshToken', COOKIE_BASE);
+export const logout = asyncHandler(async (req: Request, res: Response) => {
+  // Clearing a cookie only works when the attributes match how it was set.
+  const base = cookieOptions(req);
+  res.clearCookie('accessToken', base);
+  res.clearCookie('refreshToken', base);
   res.json({ success: true, data: { message: 'Signed out.' } });
 });
 

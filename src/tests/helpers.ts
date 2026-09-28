@@ -31,6 +31,8 @@ export async function startTestServer(): Promise<string> {
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${port}/api`;
+  // Tests that drive fetch directly (cookie attributes) need the address too.
+  process.env.TEST_BASE_URL = baseUrl;
   return baseUrl;
 }
 
