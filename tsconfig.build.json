@@ -1,0 +1,6 @@
+{
+  // The production build ships the API only: tests run through tsx and never
+  // reach dist/. `npm run typecheck` still checks them, via tsconfig.json.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/tests/**/*"]
+}

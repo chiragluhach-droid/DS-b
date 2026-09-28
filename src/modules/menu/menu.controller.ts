@@ -4,13 +4,22 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
 import { recordAudit } from '../../utils/audit';
 import { imageRef } from '../../utils/imageRef';
-import { MenuItem, DEFAULT_CUSTOMER_SHARE_PERCENT } from '../../models';
+import { MenuItem, DEFAULT_BATCH_TARGET } from '../../models';
 
 export const itemSchema = z.object({
   name: z.string().min(2, 'Give the dish a name').max(140),
   description: z.string().max(600).optional(),
   mrpPaise: z.number().int().min(100, 'Minimum ₹1').max(1_000_000),
-  customerSharePercent: z.number().int().min(1).max(100).default(DEFAULT_CUSTOMER_SHARE_PERCENT),
+  /**
+   * The 50-50 split is the platform's promise to donors, so it is not settable
+   * per dish — customerSharePercent comes from the model default.
+   */
+  batchTarget: z
+    .number()
+    .int('Enter a whole number of portions')
+    .min(1, 'A batch needs at least one portion')
+    .max(1000)
+    .default(DEFAULT_BATCH_TARGET),
   image: imageRef.optional().or(z.literal('')),
   category: z.string().max(60).default('Dosa'),
   isVeg: z.boolean().default(true),

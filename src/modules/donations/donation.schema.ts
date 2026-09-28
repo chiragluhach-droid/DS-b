@@ -1,20 +1,20 @@
 import { z } from 'zod';
-import { DONATION_STATUSES } from '../../models/types';
 
 export const createDonationSchema = z.object({
-  restaurantSlug: z.string().min(1),
+  restaurantSlug: z.string().trim().min(1),
   items: z
     .array(
       z.object({
-        menuItemId: z.string().min(1),
+        menuItemId: z.string().trim().regex(/^[0-9a-fA-F]{24}$/, 'Unknown dish'),
         quantity: z.number().int().min(1).max(200),
       })
     )
-    .min(1, 'Add at least one dish to donate'),
+    .min(1, 'Add at least one dish to donate')
+    .max(20, 'That is a lot of dishes — please split this into separate donations'),
   donor: z.object({
     // Optional — a donation with no name is recorded as anonymous.
     name: z.string().trim().max(120).optional().or(z.literal('')),
-    // Required — the confirmation and tracking link are sent here.
+    // Required — the donation ID and tracking link belong to this number.
     phone: z
       .string()
       .trim()
@@ -25,17 +25,5 @@ export const createDonationSchema = z.object({
     message: z.string().trim().max(400).optional().or(z.literal('')),
   }),
 });
-
-export const advanceStatusSchema = z.object({
-  status: z.enum(DONATION_STATUSES),
-  note: z.string().max(500).optional(),
-});
-
-export const ngoConfirmSchema = z.object({
-  portionsReceived: z.number().int().min(0).max(10000),
-  note: z.string().max(500).optional(),
-});
-
-export const assignNgoSchema = z.object({ ngoId: z.string().min(1) });
 
 export type CreateDonationInput = z.infer<typeof createDonationSchema>;

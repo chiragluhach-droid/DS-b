@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import mongoose from 'mongoose';
 import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
@@ -13,16 +12,36 @@ import {
   AuditLog,
   Batch,
   APPROVAL_STATUSES,
+  DONATION_STATUSES,
+  BATCH_STATUSES,
 } from '../../models';
+import * as batchService from '../batches/batch.service';
 
 export const approvalSchema = z.object({
   approvalStatus: z.enum(APPROVAL_STATUSES),
-  note: z.string().max(500).optional(),
+  note: z.string().trim().max(500).optional(),
 });
 
-export const resolveDiscrepancySchema = z.object({
-  resolutionNote: z.string().min(5, 'Describe how this was resolved').max(800),
+export const resolveBatchSchema = z.object({
+  resolutionNote: z.string().trim().min(5, 'Describe how this was resolved').max(800),
 });
+
+export const userStateSchema = z.object({
+  isActive: z.boolean(),
+});
+
+/** Escapes a user-typed search term so it is matched literally, not as a pattern. */
+function searchRegex(term: string): RegExp {
+  return new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+}
+
+function approvalFilter(status?: string): Record<string, unknown> {
+  if (!status || status === 'all') return {};
+  if (!(APPROVAL_STATUSES as readonly string[]).includes(status)) {
+    throw ApiError.badRequest('Unknown approval status filter.');
+  }
+  return { approvalStatus: status };
+}
 
 export const overview = asyncHandler(async (_req: Request, res: Response) => {
   const [
@@ -32,7 +51,7 @@ export const overview = asyncHandler(async (_req: Request, res: Response) => {
     pendingNgos,
     userCount,
     donationAgg,
-    discrepancies,
+    batches,
   ] = await Promise.all([
     Restaurant.countDocuments({ approvalStatus: 'approved' }),
     Restaurant.countDocuments({ approvalStatus: 'pending' }),
@@ -52,7 +71,7 @@ export const overview = asyncHandler(async (_req: Request, res: Response) => {
         },
       },
     ]),
-    Batch.countDocuments({ status: 'RECONCILIATION_REQUIRED' }),
+    batchService.batchSummary({}),
   ]);
 
   const since = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000);
@@ -68,10 +87,15 @@ export const overview = asyncHandler(async (_req: Request, res: Response) => {
     { $sort: { _id: 1 } },
   ]);
 
-  const byStatus = await Donation.aggregate([
+  const byStatusRows = await Donation.aggregate([
     { $match: { isPaid: true } },
     { $group: { _id: '$status', count: { $sum: 1 } } },
   ]);
+
+  const byStatus = Object.fromEntries(DONATION_STATUSES.map((s) => [s, 0]));
+  byStatusRows.forEach((row) => {
+    byStatus[row._id as string] = row.count;
+  });
 
   res.json({
     success: true,
@@ -82,7 +106,7 @@ export const overview = asyncHandler(async (_req: Request, res: Response) => {
         ngos: ngoCount,
         pendingNgos,
         users: userCount,
-        openDiscrepancies: discrepancies,
+        openDiscrepancies: batches.flagged,
       },
       totals: donationAgg[0] ?? {
         donations: 0,
@@ -92,15 +116,17 @@ export const overview = asyncHandler(async (_req: Request, res: Response) => {
         foodValuePaise: 0,
       },
       daily,
-      byStatus: Object.fromEntries(byStatus.map((r) => [r._id, r.count])),
+      byStatus,
+      batches,
     },
   });
 });
 
 export const listRestaurants = asyncHandler(async (req: Request, res: Response) => {
-  const { status } = req.query as Record<string, string>;
-  const query = status && status !== 'all' ? { approvalStatus: status } : {};
-  const restaurants = await Restaurant.find(query).sort({ createdAt: -1 }).limit(200).lean();
+  const restaurants = await Restaurant.find(approvalFilter(req.query.status as string))
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
   res.json({ success: true, data: { restaurants } });
 });
 
@@ -124,9 +150,10 @@ export const setRestaurantApproval = asyncHandler(async (req: Request, res: Resp
 });
 
 export const listNgos = asyncHandler(async (req: Request, res: Response) => {
-  const { status } = req.query as Record<string, string>;
-  const query = status && status !== 'all' ? { approvalStatus: status } : {};
-  const ngos = await Ngo.find(query).sort({ createdAt: -1 }).limit(200).lean();
+  const ngos = await Ngo.find(approvalFilter(req.query.status as string))
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
   res.json({ success: true, data: { ngos } });
 });
 
@@ -153,15 +180,49 @@ export const listUsers = asyncHandler(async (req: Request, res: Response) => {
   const { role, q } = req.query as Record<string, string>;
   const query: Record<string, unknown> = {};
   if (role && role !== 'all') query.role = role;
-  if (q) query.$or = [{ name: new RegExp(q, 'i') }, { email: new RegExp(q, 'i') }];
-  const users = await User.find(query).sort({ createdAt: -1 }).limit(200).lean();
+  if (q) {
+    const term = searchRegex(q);
+    query.$or = [{ name: term }, { email: term }];
+  }
+  const users = await User.find(query)
+    .select('name email phone role isActive isGuest lastLoginAt createdAt restaurant ngo')
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
   res.json({ success: true, data: { users } });
+});
+
+/** Deactivating an account ends its session on the next request it makes. */
+export const setUserState = asyncHandler(async (req: Request, res: Response) => {
+  if (req.params.id === req.user!.id) {
+    throw ApiError.badRequest('You cannot deactivate your own account.');
+  }
+  const user = await User.findByIdAndUpdate(
+    req.params.id,
+    { isActive: req.body.isActive },
+    { new: true }
+  ).select('name email role isActive');
+  if (!user) throw ApiError.notFound('Account not found.');
+
+  await recordAudit({
+    req,
+    action: req.body.isActive ? 'user.reactivated' : 'user.deactivated',
+    entityType: 'User',
+    entityId: user._id.toString(),
+    after: { isActive: user.isActive },
+  });
+  res.json({ success: true, data: { user } });
 });
 
 export const listDonations = asyncHandler(async (req: Request, res: Response) => {
   const { status } = req.query as Record<string, string>;
   const query: Record<string, unknown> = { isPaid: true };
-  if (status && status !== 'all') query.status = status;
+  if (status && status !== 'all') {
+    if (!(DONATION_STATUSES as readonly string[]).includes(status)) {
+      throw ApiError.badRequest('Unknown donation status filter.');
+    }
+    query.status = status;
+  }
 
   const donations = await Donation.find(query)
     .populate({ path: 'restaurant', select: 'name slug' })
@@ -172,23 +233,9 @@ export const listDonations = asyncHandler(async (req: Request, res: Response) =>
   res.json({ success: true, data: { donations } });
 });
 
-export const listBatches = asyncHandler(async (req: Request, res: Response) => {
-  const { status, flagged } = req.query as Record<string, string>;
-  const query: Record<string, unknown> = {};
-  if (status && status !== 'all') query.status = status;
-  if (flagged === 'true') query.status = 'RECONCILIATION_REQUIRED';
-
-  const batches = await Batch.find(query)
-    .populate({ path: 'restaurant', select: 'name slug' })
-    .populate({ path: 'ngo', select: 'name slug' })
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .lean();
-  res.json({ success: true, data: { batches } });
-});
-
 export const listPayments = asyncHandler(async (_req: Request, res: Response) => {
   const payments = await Payment.find({})
+    .select('-rawPayload -signature')
     .populate({ path: 'donation', select: 'donationId customerPaidPaise donorSnapshot.name status' })
     .sort({ createdAt: -1 })
     .limit(200)
@@ -196,28 +243,38 @@ export const listPayments = asyncHandler(async (_req: Request, res: Response) =>
   res.json({ success: true, data: { payments } });
 });
 
-export const resolveDiscrepancy = asyncHandler(async (req: Request, res: Response) => {
-  const batch = await Batch.findOne({ batchId: req.params.batchId });
-  if (!batch) throw ApiError.notFound('Batch not found.');
-  if (batch.status !== 'RECONCILIATION_REQUIRED') {
-    throw ApiError.badRequest('This batch has no open discrepancy.');
+/** Batches across the platform, flagged ones first when no filter is given. */
+export const listBatches = asyncHandler(async (req: Request, res: Response) => {
+  const { status } = req.query as Record<string, string>;
+  if (status && status !== 'all' && !(BATCH_STATUSES as readonly string[]).includes(status)) {
+    throw ApiError.badRequest('Unknown batch status filter.');
   }
-  
-  batch.resolution = {
-    note: req.body.resolutionNote,
-    resolvedBy: new mongoose.Types.ObjectId(req.user!.id),
-    resolvedAt: new Date()
-  };
-  batch.status = 'COMPLETED';
-  await batch.save();
+
+  const batches = await Batch.find(status && status !== 'all' ? { status } : {})
+    .populate({ path: 'restaurant', select: 'name slug' })
+    .populate({ path: 'ngo', select: 'name slug' })
+    .sort({ status: 1, createdAt: -1 })
+    .limit(200)
+    .lean();
+
+  res.json({ success: true, data: { batches } });
+});
+
+export const resolveBatch = asyncHandler(async (req: Request, res: Response) => {
+  const batch = await batchService.resolveBatch(req.params.batchId, req.body.resolutionNote, {
+    id: req.user!.id,
+    role: req.user!.role,
+    name: req.user!.name,
+  });
 
   await recordAudit({
     req,
-    action: 'discrepancy.resolve',
+    action: 'batch.discrepancy_resolved',
     entityType: 'Batch',
     entityId: batch.batchId,
-    after: { resolutionNote: req.body.resolutionNote, status: 'COMPLETED' },
+    after: { resolutionNote: req.body.resolutionNote },
   });
+
   res.json({ success: true, data: { batch } });
 });
 
@@ -225,7 +282,7 @@ export const listAuditLogs = asyncHandler(async (req: Request, res: Response) =>
   const { entityType, action } = req.query as Record<string, string>;
   const query: Record<string, unknown> = {};
   if (entityType && entityType !== 'all') query.entityType = entityType;
-  if (action) query.action = new RegExp(action, 'i');
+  if (action) query.action = searchRegex(action);
   const logs = await AuditLog.find(query).sort({ createdAt: -1 }).limit(200).lean();
   res.json({ success: true, data: { logs } });
 });

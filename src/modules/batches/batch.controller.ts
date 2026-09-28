@@ -1,92 +1,114 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response } from 'express';
 import { z } from 'zod';
-import * as batchService from './batch.service';
-import { Role } from '../../models';
+import { asyncHandler } from '../../utils/asyncHandler';
+import { ApiError } from '../../utils/ApiError';
+import { recordAudit } from '../../utils/audit';
+import * as service from './batch.service';
 
-const dispatchBatchSchema = z.object({
-  dispatchedQuantity: z.number().min(0),
-  note: z.string().optional(),
+export const dispatchSchema = z.object({
+  note: z.string().trim().max(500).optional(),
 });
 
-const confirmReceiptSchema = z.object({
-  receivedQuantity: z.number().min(0),
-  note: z.string().optional(),
+export const confirmSchema = z.object({
+  receivedQuantity: z
+    .number({ invalid_type_error: 'Enter the number of portions you received' })
+    .int('Enter a whole number of portions')
+    .min(0)
+    .max(100000),
+  note: z.string().trim().max(500).optional(),
 });
 
-export async function getRestaurantBatchesHandler(req: Request, res: Response, next: NextFunction) {
-  try {
-    const restaurantId = req.user?.restaurant; // Assuming the restaurant user has this field
-    if (!restaurantId && req.user?.role !== 'admin') {
-      return res.status(403).json({ error: 'Unauthorized.' });
-    }
-    const targetId = (req.query.restaurantId as string) || restaurantId;
-    if (!targetId) return res.status(400).json({ error: 'restaurantId is required.' });
-
-    const batches = await batchService.getBatchesForRestaurant(targetId);
-    res.json({ data: batches });
-  } catch (error) {
-    next(error);
-  }
+function actorFrom(req: Request): service.Actor {
+  return { id: req.user!.id, role: req.user!.role, name: req.user!.name };
 }
 
-export async function getNgoBatchesHandler(req: Request, res: Response, next: NextFunction) {
-  try {
-    const ngoId = req.user?.ngo; // Assuming the NGO user has this field
-    if (!ngoId && req.user?.role !== 'admin') {
-      return res.status(403).json({ error: 'Unauthorized.' });
-    }
-    const targetId = (req.query.ngoId as string) || ngoId;
-    if (!targetId) return res.status(400).json({ error: 'ngoId is required.' });
-
-    const batches = await batchService.getBatchesForNgo(targetId);
-    res.json({ data: batches });
-  } catch (error) {
-    next(error);
+/**
+ * A restaurant or NGO only ever sees its own batches. An admin may look at any,
+ * optionally narrowed by a query parameter — which is why the scope comes from
+ * the account and never from the request for the other two roles.
+ */
+function scopeFor(req: Request, side: 'restaurant' | 'ngo'): service.BatchScope {
+  if (req.user!.role === 'admin') {
+    const requested = req.query[`${side}Id`];
+    return typeof requested === 'string' && requested ? { [side]: requested } : {};
   }
+
+  const own = side === 'restaurant' ? req.user!.restaurant : req.user!.ngo;
+  if (!own) {
+    throw ApiError.forbidden(
+      side === 'restaurant'
+        ? 'This account is not linked to a restaurant yet.'
+        : 'This account is not linked to an NGO yet.'
+    );
+  }
+  return { [side]: own };
 }
 
-export async function dispatchBatchHandler(req: Request, res: Response, next: NextFunction) {
-  try {
-    const { batchId } = req.params;
-    const { dispatchedQuantity, note } = dispatchBatchSchema.parse(req.body);
+export const listForRestaurant = asyncHandler(async (req: Request, res: Response) => {
+  const scope = scopeFor(req, 'restaurant');
+  const [batches, summary] = await Promise.all([
+    service.listBatches(scope, req.query.status as string | undefined),
+    service.batchSummary(scope),
+  ]);
+  res.json({ success: true, data: { batches, summary } });
+});
 
-    const restaurantId = req.user?.restaurant;
-    if (!restaurantId && req.user?.role !== 'admin') {
-      return res.status(403).json({ error: 'Unauthorized.' });
-    }
+export const listForNgo = asyncHandler(async (req: Request, res: Response) => {
+  const scope = scopeFor(req, 'ngo');
+  const [batches, summary] = await Promise.all([
+    service.listBatches(scope, req.query.status as string | undefined),
+    service.batchSummary(scope),
+  ]);
+  res.json({ success: true, data: { batches, summary } });
+});
 
-    // In a real app, you'd find the restaurantId based on the batch if admin, or use the logged in user's
-    const targetId = (req.query.restaurantId as string) || restaurantId;
-    
-    if (!targetId) return res.status(400).json({ error: 'restaurantId required.' });
+/** Readable by either side of the handover, and by an admin. */
+export const detail = asyncHandler(async (req: Request, res: Response) => {
+  const { role, restaurant, ngo } = req.user!;
+  const scope: service.BatchScope =
+    role === 'admin' ? {} : role === 'restaurant' ? { restaurant } : { ngo };
+  const data = await service.getBatch(req.params.batchId, scope);
+  res.json({ success: true, data });
+});
 
-    const actor = { id: req.user!.id, role: req.user!.role as Role, name: req.user!.email };
+export const dispatch = asyncHandler(async (req: Request, res: Response) => {
+  const batch = await service.dispatchBatch(
+    req.params.batchId,
+    scopeFor(req, 'restaurant'),
+    actorFrom(req),
+    req.body.note
+  );
 
-    const batch = await batchService.dispatchBatch(batchId, targetId, dispatchedQuantity, actor, note);
-    res.json({ data: batch });
-  } catch (error) {
-    next(error);
-  }
-}
+  await recordAudit({
+    req,
+    action: 'batch.dispatch',
+    entityType: 'Batch',
+    entityId: batch.batchId,
+    after: { dispatchedQuantity: batch.dispatchedQuantity, item: batch.itemName },
+  });
 
-export async function confirmBatchReceiptHandler(req: Request, res: Response, next: NextFunction) {
-  try {
-    const { batchId } = req.params;
-    const { receivedQuantity, note } = confirmReceiptSchema.parse(req.body);
+  res.json({ success: true, data: { batch } });
+});
 
-    const ngoId = req.user?.ngo;
-    if (!ngoId && req.user?.role !== 'admin') {
-      return res.status(403).json({ error: 'Unauthorized.' });
-    }
+export const confirm = asyncHandler(async (req: Request, res: Response) => {
+  const batch = await service.confirmBatchReceipt(
+    req.params.batchId,
+    scopeFor(req, 'ngo'),
+    req.body.receivedQuantity,
+    actorFrom(req),
+    req.body.note
+  );
 
-    const targetId = (req.query.ngoId as string) || ngoId;
-    if (!targetId) return res.status(400).json({ error: 'ngoId required.' });
+  await recordAudit({
+    req,
+    action: batch.status === 'RECONCILIATION_REQUIRED' ? 'batch.shortfall' : 'batch.confirm',
+    entityType: 'Batch',
+    entityId: batch.batchId,
+    after: {
+      receivedQuantity: batch.receivedQuantity,
+      dispatchedQuantity: batch.dispatchedQuantity,
+    },
+  });
 
-    const actor = { id: req.user!.id, role: req.user!.role as Role, name: req.user!.email };
-
-    const batch = await batchService.confirmBatchReceipt(batchId, targetId, receivedQuantity, actor, note);
-    res.json({ data: batch });
-  } catch (error) {
-    next(error);
-  }
-}
+  res.json({ success: true, data: { batch } });
+});

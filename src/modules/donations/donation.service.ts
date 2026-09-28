@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import { Types } from 'mongoose';
 import {
   Donation,
   DonationEvent,
@@ -6,75 +6,56 @@ import {
   Restaurant,
   Ngo,
   RestaurantNgoRelationship,
+  Batch,
+  BatchEvent,
   IDonation,
   IDonationItemSnapshot,
   DONATION_STATUSES,
   DonationStatus,
-  AnyDonationStatus,
+  TERMINAL_STATUSES,
+  RECEIVED_BATCH_STATUSES,
+  DEFAULT_BATCH_TARGET,
   splitPrice,
   Role,
-  Batch,
 } from '../../models';
-import { generateBatchId } from '../../utils/ids';
 import { ApiError } from '../../utils/ApiError';
-import { generateDonationId } from '../../utils/ids';
+import { generateBatchId, generateDonationId } from '../../utils/ids';
 import { CreateDonationInput } from './donation.schema';
 
 const STATUS_INDEX = new Map<string, number>(DONATION_STATUSES.map((s, i) => [s, i]));
+const isTerminal = (status: string) => (TERMINAL_STATUSES as readonly string[]).includes(status);
 
-const EVENT_COPY: Partial<Record<AnyDonationStatus, { title: string; note: string }>> = {
+/**
+ * What the donor reads on the tracking page. Each entry is written once, when
+ * the donation first reaches that status.
+ */
+const EVENT_COPY: Record<DonationStatus, { title: string; note: string }> = {
   PENDING_PAYMENT: {
-    title: 'Payment Pending',
-    note: 'Waiting for payment confirmation.',
+    title: 'Awaiting payment',
+    note: 'Your donation is reserved and waiting for payment to complete.',
   },
   PAYMENT_SUCCESS: {
-    title: 'Payment Successful',
-    note: 'Your contribution was received successfully.',
+    title: 'Donation received',
+    note: 'Your payment was verified. The kitchen has been notified and matches your half.',
   },
   ASSIGNED_TO_BATCH: {
-    title: 'Assigned to Batch',
-    note: 'Your donation has been assigned to a delivery batch.',
+    title: 'Queued in the kitchen',
+    note: 'Your dishes joined the next batch being cooked for the NGO.',
   },
-  REFUNDED: {
-    title: 'Refunded',
-    note: 'Your donation was refunded.',
+  DISPATCHED: {
+    title: 'Cooked and sent',
+    note: 'The kitchen cooked the batch and sent it to the NGO.',
   },
-  FAILED: {
-    title: 'Failed',
-    note: 'Your payment failed.',
+  NGO_CONFIRMED: {
+    title: 'Confirmed by the NGO',
+    note: 'The NGO counted the food on arrival and confirmed it.',
   },
 };
 
-/**
- * A donation may only move forward one step at a time, and only by a role
- * permitted to make that particular move.
- */
-export function assertValidTransition(
-  current: AnyDonationStatus,
-  next: DonationStatus,
-  role: Role
-): void {
-  if (current === 'CANCELLED' || current === 'REFUNDED') {
-    throw ApiError.badRequest(`This donation is ${current.toLowerCase()} and can no longer change.`);
-  }
-  const currentIdx = STATUS_INDEX.get(current);
-  const nextIdx = STATUS_INDEX.get(next);
-  if (currentIdx === undefined || nextIdx === undefined) {
-    throw ApiError.badRequest('Unknown donation status.');
-  }
-  if (nextIdx <= currentIdx) {
-    throw ApiError.badRequest('A donation can never move backwards in its lifecycle.');
-  }
-  if (nextIdx !== currentIdx + 1) {
-    throw ApiError.badRequest(
-      `The next step for this donation is "${DONATION_STATUSES[currentIdx + 1]}", not "${next}".`
-    );
-  }
-}
-
 interface AppendEventArgs {
   donation: IDonation;
-  status: AnyDonationStatus;
+  status: DonationStatus | (typeof TERMINAL_STATUSES)[number];
+  title?: string;
   note?: string;
   actorId?: string;
   actorRole?: Role | 'system';
@@ -85,6 +66,7 @@ interface AppendEventArgs {
 export async function appendEvent({
   donation,
   status,
+  title,
   note,
   actorId,
   actorRole = 'system',
@@ -95,13 +77,27 @@ export async function appendEvent({
   return DonationEvent.create({
     donation: donation._id,
     status,
-    title: copy?.title ?? status,
+    title: title ?? copy?.title ?? status,
     note: note ?? copy?.note,
     actor: actorId,
     actorRole,
     actorName,
     metadata,
   });
+}
+
+/** The NGO a restaurant's donations are routed to: its primary active partner. */
+export async function primaryPartnerNgoId(
+  restaurantId: Types.ObjectId
+): Promise<Types.ObjectId | undefined> {
+  const partnership = await RestaurantNgoRelationship.findOne({
+    restaurant: restaurantId,
+    status: 'active',
+  })
+    .sort({ isPrimary: -1, createdAt: 1 })
+    .select('ngo')
+    .lean();
+  return partnership?.ngo;
 }
 
 export async function createDonation(input: CreateDonationInput, donorUserId?: string) {
@@ -152,20 +148,11 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
   const totalPortions = snapshots.reduce((sum, s) => sum + s.quantity, 0);
   const customerPaidPaise = snapshots.reduce((sum, s) => sum + s.lineCustomerPaise, 0);
   const restaurantContributionPaise = snapshots.reduce((sum, s) => sum + s.lineRestaurantPaise, 0);
-  const totalFoodValuePaise = customerPaidPaise + restaurantContributionPaise;
 
-  // Route to the restaurant's primary NGO partner.
-  const partnership = await RestaurantNgoRelationship.findOne({
-    restaurant: restaurant._id,
-    status: 'active',
-  }).sort({ isPrimary: -1, createdAt: 1 });
-
-  // Guests are not given an account. A donation is reachable by its id, and
-  // the confirmation goes to the mobile number they left.
   const donation = await Donation.create({
     donationId: generateDonationId(),
     restaurant: restaurant._id,
-    ngo: partnership?.ngo,
+    ngo: await primaryPartnerNgoId(restaurant._id),
     donor: donorUserId,
     donorSnapshot: {
       // No name given means the donor stays anonymous on the public wall.
@@ -178,7 +165,7 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
     totalPortions,
     customerPaidPaise,
     restaurantContributionPaise,
-    totalFoodValuePaise,
+    totalFoodValuePaise: customerPaidPaise + restaurantContributionPaise,
     status: 'PENDING_PAYMENT',
     isPaid: false,
     timestamps_: {},
@@ -187,142 +174,321 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
   return { donation, restaurant };
 }
 
-/** Called once payment is verified — this is what actually starts the lifecycle. */
-export async function markDonationPaid(donation: IDonation) {
-  if (donation.isPaid) return donation;
+/**
+ * Called once a payment is verified — by the browser returning from the gateway,
+ * by the webhook, or both. The paid flag is claimed in one atomic update so the
+ * side effects below (restaurant totals, batch quantities) run exactly once
+ * however many times this is called.
+ */
+export async function markDonationPaid(donationId: Types.ObjectId): Promise<IDonation | null> {
+  const claimed = await Donation.findOneAndUpdate(
+    { _id: donationId, isPaid: false },
+    {
+      $set: {
+        isPaid: true,
+        status: 'PAYMENT_SUCCESS',
+        'timestamps_.PAYMENT_SUCCESS': new Date(),
+      },
+    },
+    { new: true }
+  );
 
-  donation.isPaid = true;
-  donation.status = 'PAYMENT_SUCCESS';
-  donation.timestamps_ = { ...donation.timestamps_, PAYMENT_SUCCESS: new Date() };
-  await donation.save();
+  if (!claimed) return Donation.findById(donationId);
 
-  await appendEvent({ donation, status: 'PAYMENT_SUCCESS' });
+  await appendEvent({ donation: claimed, status: 'PAYMENT_SUCCESS' });
 
-  await Restaurant.findByIdAndUpdate(donation.restaurant, {
+  await Restaurant.findByIdAndUpdate(claimed.restaurant, {
     $inc: {
       'stats.totalDonations': 1,
-      'stats.totalPortions': donation.totalPortions,
-      'stats.customerContributionPaise': donation.customerPaidPaise,
-      'stats.restaurantContributionPaise': donation.restaurantContributionPaise,
-      'stats.totalFoodValuePaise': donation.totalFoodValuePaise,
+      'stats.totalPortions': claimed.totalPortions,
+      'stats.customerContributionPaise': claimed.customerPaidPaise,
+      'stats.restaurantContributionPaise': claimed.restaurantContributionPaise,
+      'stats.totalFoodValuePaise': claimed.totalFoodValuePaise,
     },
   });
 
-  // Assign to a batch
-  const primaryItem = donation.items[0]; // Assuming 1 type of item per donation for V1
-  if (primaryItem && donation.ngo) {
-    const menuItem = await MenuItem.findById(primaryItem.menuItem);
-    const targetQuantity = menuItem?.batchTarget || 40;
-
-    let batch = await Batch.findOne({
-      restaurant: donation.restaurant,
-      ngo: donation.ngo,
-      menuItem: primaryItem.menuItem,
-      status: 'IN_PROGRESS',
-    });
-
-    if (!batch) {
-      batch = await Batch.create({
-        batchId: generateBatchId(),
-        restaurant: donation.restaurant,
-        ngo: donation.ngo,
-        menuItem: primaryItem.menuItem,
-        itemName: primaryItem.name,
-        targetQuantity,
-        collectedQuantity: 0,
-        donationCount: 0,
-      });
-    }
-
-    batch.collectedQuantity += donation.totalPortions;
-    batch.donationCount = (batch.donationCount || 0) + 1;
-    if (batch.collectedQuantity >= batch.targetQuantity) {
-      batch.status = 'READY_FOR_DELIVERY';
-      batch.readyAt = new Date();
-    }
-    await batch.save();
-
-    donation.items[0].batch = batch._id;
-    donation.status = 'ASSIGNED_TO_BATCH';
-    donation.timestamps_ = { ...donation.timestamps_, ASSIGNED_TO_BATCH: new Date() };
-    await donation.save();
-    
-    await appendEvent({ donation, status: 'ASSIGNED_TO_BATCH' });
-  }
-
-  return donation;
+  await assignToBatches(claimed);
+  return syncDonationStatus(claimed._id);
 }
 
-export async function advanceStatus(
-  donationId: string,
-  next: DonationStatus,
-  actor: { id: string; role: Role; name: string },
-  note?: string
+/**
+ * Puts every dish in the donation into the batch its kitchen is currently
+ * collecting for that NGO — one batch per dish, so a donation of two dishes is
+ * cooked in two batches and only counts as delivered when both have gone out.
+ */
+export async function assignToBatches(donation: IDonation): Promise<void> {
+  let ngoId = donation.ngo;
+  if (!ngoId) {
+    // The restaurant may have gained a partner since the donation was made.
+    ngoId = await primaryPartnerNgoId(donation.restaurant);
+    if (!ngoId) return; // Still unpartnered — stays at PAYMENT_SUCCESS, picked up later.
+    await Donation.updateOne({ _id: donation._id }, { $set: { ngo: ngoId } });
+    donation.ngo = ngoId;
+  }
+
+  for (const [index, line] of donation.items.entries()) {
+    if (line.batch) continue;
+    const batchId = await addLineToBatch(donation, index, line, ngoId);
+    line.batch = batchId;
+  }
+}
+
+/**
+ * Puts one dish line into the batch collecting for it, counting its portions
+ * exactly once.
+ *
+ * The order matters: the portions are added to the batch only while it is still
+ * collecting, and the line is linked to the batch only if no other request has
+ * linked it already. If that link loses the race the count is given back, so a
+ * repeated call can never inflate a batch or add food to one already sent.
+ */
+async function addLineToBatch(
+  donation: IDonation,
+  index: number,
+  line: IDonationItemSnapshot,
+  ngoId: Types.ObjectId
+): Promise<Types.ObjectId | undefined> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const batch = await openBatchFor(donation.restaurant, ngoId, line);
+
+    const counted = await Batch.updateOne(
+      { _id: batch._id, status: 'IN_PROGRESS' },
+      { $inc: { collectedQuantity: line.quantity, donationCount: 1 } }
+    );
+    // The kitchen dispatched this batch a moment ago — find or open the next one.
+    if (counted.modifiedCount === 0) continue;
+
+    const linked = await Donation.updateOne(
+      { _id: donation._id, [`items.${index}.batch`]: { $exists: false } },
+      { $set: { [`items.${index}.batch`]: batch._id } }
+    );
+
+    if (linked.modifiedCount === 0) {
+      await Batch.updateOne(
+        { _id: batch._id, status: 'IN_PROGRESS' },
+        { $inc: { collectedQuantity: -line.quantity, donationCount: -1 } }
+      );
+      const current = await Donation.findById(donation._id).select('items').lean();
+      return current?.items[index]?.batch;
+    }
+
+    await markBatchReadyIfFull(batch._id);
+    return batch._id;
+  }
+
+  throw ApiError.conflict('Could not add this donation to a batch. Please try again.');
+}
+
+/**
+ * The batch currently collecting this dish for this NGO, opening one if there is
+ * none. The unique partial index on (restaurant, ngo, menuItem) for IN_PROGRESS
+ * batches means two payments landing together share a batch rather than opening
+ * two — one upsert wins, the loser retries into the winner's batch.
+ */
+async function openBatchFor(
+  restaurantId: Types.ObjectId,
+  ngoId: Types.ObjectId,
+  line: IDonationItemSnapshot
 ) {
-  const donation = await Donation.findOne({ donationId });
-  if (!donation) throw ApiError.notFound('Donation not found.');
-  if (!donation.isPaid) throw ApiError.badRequest('This donation has not been paid for yet.');
+  const menuItem = await MenuItem.findById(line.menuItem).select('batchTarget').lean();
+  const filter = {
+    restaurant: restaurantId,
+    ngo: ngoId,
+    menuItem: line.menuItem,
+    status: 'IN_PROGRESS' as const,
+  };
 
-  assertValidTransition(donation.status, next, actor.role);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const batch = await Batch.findOneAndUpdate(
+        filter,
+        {
+          $setOnInsert: {
+            batchId: generateBatchId(),
+            itemName: line.name,
+            targetQuantity: menuItem?.batchTarget ?? DEFAULT_BATCH_TARGET,
+          },
+        },
+        { upsert: true, new: true }
+      );
+      if (batch.collectedQuantity === 0) {
+        await BatchEvent.create({
+          batch: batch._id,
+          toStatus: 'IN_PROGRESS',
+          actorType: 'system',
+          note: `Batch opened for ${batch.itemName} — collecting ${batch.targetQuantity} portions.`,
+        });
+      }
+      return batch;
+    } catch (err) {
+      const duplicate = (err as { code?: number }).code === 11000;
+      if (!duplicate || attempt === 2) throw err;
+    }
+  }
+  throw ApiError.conflict('Could not open a batch for this dish. Please try again.');
+}
 
-  donation.status = next;
-  donation.timestamps_ = { ...donation.timestamps_, [next]: new Date() };
-  await donation.save();
+/** A batch that has reached its target stops collecting and waits for the kitchen. */
+export async function markBatchReadyIfFull(batchId: Types.ObjectId): Promise<void> {
+  const result = await Batch.updateOne(
+    {
+      _id: batchId,
+      status: 'IN_PROGRESS',
+      $expr: { $gte: ['$collectedQuantity', '$targetQuantity'] },
+    },
+    { $set: { status: 'READY_FOR_DELIVERY', readyAt: new Date() } }
+  );
 
-  await appendEvent({
-    donation,
-    status: next,
-    note,
-    actorId: actor.id,
-    actorRole: actor.role,
-    actorName: actor.name,
+  if (result.modifiedCount > 0) {
+    const batch = await Batch.findById(batchId).select('collectedQuantity itemName').lean();
+    await BatchEvent.create({
+      batch: batchId,
+      fromStatus: 'IN_PROGRESS',
+      toStatus: 'READY_FOR_DELIVERY',
+      actorType: 'system',
+      note: `Target reached — ${batch?.collectedQuantity} portions of ${batch?.itemName} ready to cook.`,
+    });
+  }
+}
+
+/** Where a donation has got to, read from the batches its dishes are in. */
+async function deriveStatus(donation: IDonation): Promise<DonationStatus> {
+  const batchIds = donation.items.map((i) => i.batch).filter(Boolean) as Types.ObjectId[];
+  if (batchIds.length < donation.items.length) return 'PAYMENT_SUCCESS';
+
+  const batches = await Batch.find({ _id: { $in: batchIds } }).select('status').lean();
+  if (batches.length < batchIds.length) return 'ASSIGNED_TO_BATCH';
+
+  // A donation is only as far along as its least advanced dish.
+  const ranks = batches.map((b) => {
+    if (RECEIVED_BATCH_STATUSES.includes(b.status)) return STATUS_INDEX.get('NGO_CONFIRMED')!;
+    if (b.status === 'DISPATCHED') return STATUS_INDEX.get('DISPATCHED')!;
+    return STATUS_INDEX.get('ASSIGNED_TO_BATCH')!;
   });
 
-  return donation;
+  return DONATION_STATUSES[Math.min(...ranks)];
 }
 
+/**
+ * Brings a donation's status in line with its batches, writing one timeline
+ * event per step it passes through. Idempotent, so it is safe to call from
+ * every path that touches a batch.
+ */
+export async function syncDonationStatus(donationId: Types.ObjectId): Promise<IDonation | null> {
+  let donation = await Donation.findById(donationId);
+  if (!donation || !donation.isPaid || isTerminal(donation.status)) return donation;
 
-export async function assignNgo(donationId: string, ngoId: string) {
-  const ngo = await Ngo.findById(ngoId);
-  if (!ngo) throw ApiError.notFound('NGO not found.');
-  if (ngo.approvalStatus !== 'approved') throw ApiError.badRequest('That NGO is not approved yet.');
+  const target = await deriveStatus(donation);
+  const targetIdx = STATUS_INDEX.get(target)!;
+  let currentIdx = STATUS_INDEX.get(donation.status)!;
 
-  const donation = await Donation.findOneAndUpdate({ donationId }, { ngo: ngo._id }, { new: true });
-  if (!donation) throw ApiError.notFound('Donation not found.');
-  return donation;
-}
+  while (currentIdx < targetIdx) {
+    const from = DONATION_STATUSES[currentIdx];
+    const next = DONATION_STATUSES[currentIdx + 1];
 
-export async function getTimeline(donationObjectId: mongoose.Types.ObjectId) {
-  const donation = await Donation.findById(donationObjectId).lean();
-  if (!donation) return [];
+    const moved = await Donation.findOneAndUpdate(
+      { _id: donationId, status: from },
+      { $set: { status: next, [`timestamps_.${next}`]: new Date() } },
+      { new: true }
+    );
+    // Another request advanced it first; its event was written there.
+    if (!moved) return Donation.findById(donationId);
 
-  const donationEvents = await DonationEvent.find({ donation: donationObjectId }).sort({ createdAt: 1 }).lean();
-  
-  if (!donation.items[0]?.batch) {
-    return donationEvents;
+    donation = moved;
+    await appendEvent({ donation: moved, status: next, ...(await actorFor(moved, next)) });
+    currentIdx += 1;
   }
 
-  const batchEvents = await mongoose.model('BatchEvent').find({ batch: donation.items[0].batch }).sort({ createdAt: 1 }).lean();
-  
-  // Map BatchEvents to DonationEvent shape
-  const mappedBatchEvents = batchEvents.map((be: any) => {
-    let status = be.toStatus;
-    if (status === 'READY_FOR_DELIVERY' || status === 'IN_PROGRESS') status = 'ASSIGNED_TO_BATCH';
-    if (status === 'RECONCILIATION_REQUIRED' || status === 'COMPLETED') status = 'NGO_CONFIRMED';
-    
-    return {
-      _id: be._id,
-      donation: donationObjectId,
-      status,
-      title: be.note || status,
-      note: be.note,
-      actorType: be.actorType,
-      actorId: be.actorId,
-      createdAt: be.createdAt
-    };
+  return donation;
+}
+
+/** Steps are signed by whoever is responsible for them, not by the platform. */
+async function actorFor(
+  donation: IDonation,
+  status: DonationStatus
+): Promise<{ actorRole: Role | 'system'; actorName: string }> {
+  if (status === 'DISPATCHED') {
+    const restaurant = await Restaurant.findById(donation.restaurant).select('name').lean();
+    return { actorRole: 'restaurant', actorName: restaurant?.name ?? 'The kitchen' };
+  }
+  if (status === 'NGO_CONFIRMED') {
+    const ngo = await Ngo.findById(donation.ngo).select('name').lean();
+    return { actorRole: 'ngo', actorName: ngo?.name ?? 'The NGO' };
+  }
+  return { actorRole: 'system', actorName: 'DaanSetu' };
+}
+
+/** Re-syncs every donation that has food in a batch. Called after the batch moves. */
+export async function syncDonationsForBatch(batchId: Types.ObjectId): Promise<void> {
+  const donations = await Donation.find({ 'items.batch': batchId, isPaid: true })
+    .select('_id')
+    .lean();
+  for (const { _id } of donations) {
+    await syncDonationStatus(_id as Types.ObjectId);
+  }
+}
+
+/**
+ * Paid donations that never found a batch because the kitchen had no NGO partner
+ * at the time. Called when a partnership is set up so nothing is left behind.
+ */
+export async function assignPendingDonations(restaurantId: Types.ObjectId): Promise<number> {
+  const pending = await Donation.find({
+    restaurant: restaurantId,
+    isPaid: true,
+    status: 'PAYMENT_SUCCESS',
   });
 
-  return [...donationEvents, ...mappedBatchEvents].sort((a: any, b: any) => 
-    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
+  let assigned = 0;
+  for (const donation of pending) {
+    await assignToBatches(donation);
+    const synced = await syncDonationStatus(donation._id);
+    if (synced && synced.status !== 'PAYMENT_SUCCESS') assigned += 1;
+  }
+  return assigned;
+}
+
+export async function getTimeline(donationObjectId: Types.ObjectId) {
+  return DonationEvent.find({ donation: donationObjectId }).sort({ createdAt: 1 }).lean();
+}
+
+/**
+ * The batches a donation's dishes are in, with the counts a donor is entitled to
+ * see: how full the batch is, what went out, and what the NGO counted.
+ */
+export async function getDonationBatches(donation: IDonation) {
+  const batchIds = donation.items.map((i) => i.batch).filter(Boolean) as Types.ObjectId[];
+  if (batchIds.length === 0) return [];
+
+  const batches = await Batch.find({ _id: { $in: batchIds } })
+    .select(
+      'batchId itemName status targetQuantity collectedQuantity dispatchedQuantity receivedQuantity readyAt dispatchedAt receivedAt receiptNote resolution'
+    )
+    .lean();
+
+  const byId = new Map(batches.map((b) => [b._id.toString(), b]));
+
+  return donation.items
+    .filter((item) => item.batch)
+    .map((item) => {
+      const batch = byId.get(item.batch!.toString());
+      return {
+        itemName: item.name,
+        quantity: item.quantity,
+        batchId: batch?.batchId,
+        status: batch?.status,
+        targetQuantity: batch?.targetQuantity,
+        collectedQuantity: batch?.collectedQuantity,
+        dispatchedQuantity: batch?.dispatchedQuantity,
+        receivedQuantity: batch?.receivedQuantity,
+        readyAt: batch?.readyAt,
+        dispatchedAt: batch?.dispatchedAt,
+        receivedAt: batch?.receivedAt,
+        receiptNote: batch?.receiptNote,
+        shortfall:
+          batch?.status === 'RECONCILIATION_REQUIRED' ||
+          (batch?.receivedAt ? batch.receivedQuantity !== batch.dispatchedQuantity : false),
+        resolutionNote: batch?.resolution?.note,
+      };
+    });
 }

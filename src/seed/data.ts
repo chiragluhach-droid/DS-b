@@ -13,6 +13,9 @@ export const images = {
 /**
  * Dil Dosa's donation menu. `mrpPaise` is the dish's normal price — the guest
  * pays half and the kitchen matches the other half.
+ *
+ * `batchTarget` is how many funded portions of a dish the kitchen collects
+ * before it cooks and sends that batch to the NGO.
  */
 export const menuItems = [
   {
@@ -20,6 +23,7 @@ export const menuItems = [
     description:
       'Crisp rice-and-lentil crepe folded over spiced potato, with coconut chutney and sambhar. The plate we send out most.',
     mrpPaise: 10000,
+    batchTarget: 20,
     image: IMG('photo-1668236543090-82eba5ee5976'),
     category: 'Dosa',
     servingSize: 'Serves 1',
@@ -31,6 +35,7 @@ export const menuItems = [
     description:
       'Two steamed rice cakes in hot sambhar with chutney. Soft, light and gentle — what we send to shelters and clinics.',
     mrpPaise: 8000,
+    batchTarget: 15,
     image: IMG('photo-1630383249896-424e482df921'),
     category: 'Idli & Vada',
     servingSize: '2 pieces',
@@ -42,6 +47,7 @@ export const menuItems = [
     description:
       'Dosa stuffed with spiced cottage cheese and onion. Our highest-protein plate, cooked for the children’s programme.',
     mrpPaise: 16000,
+    batchTarget: 10,
     image: IMG('photo-1622542796254-5b9c46ab0d2f'),
     category: 'Dosa',
     servingSize: 'Serves 1',
@@ -52,6 +58,7 @@ export const menuItems = [
     description:
       'The everyday dosa — thin, crisp, served with chutney and sambhar. The most affordable way to fund a full plate.',
     mrpPaise: 7000,
+    batchTarget: 24,
     image: IMG('photo-1610192244261-3f33de3f55e4'),
     category: 'Dosa',
     servingSize: 'Serves 1',
@@ -62,6 +69,7 @@ export const menuItems = [
     description:
       'Lacy semolina dosa with cumin, ginger and green chilli. Made to order, and it travels well.',
     mrpPaise: 12000,
+    batchTarget: 12,
     image: IMG('photo-1633945274309-2c16c9682a8c'),
     category: 'Dosa',
     servingSize: 'Serves 1',
@@ -72,6 +80,7 @@ export const menuItems = [
     description:
       'Red chilli-garlic chutney spread inside, potato masala within. A little heat for a cold evening.',
     mrpPaise: 13000,
+    batchTarget: 12,
     image: IMG('photo-1626074353765-517a681e40be'),
     category: 'Dosa',
     servingSize: 'Serves 1',
@@ -82,6 +91,7 @@ export const menuItems = [
     description:
       'Two crisp lentil doughnuts with sambhar and coconut chutney. Our 7am plate for night-shift workers.',
     mrpPaise: 7000,
+    batchTarget: 12,
     image: IMG('photo-1589301760014-d929f3979dbc'),
     category: 'Idli & Vada',
     servingSize: '2 pieces',
@@ -92,6 +102,7 @@ export const menuItems = [
     description:
       'Three soft, spongy dosas stacked with a vegetable kurma. Filling enough to carry someone through the day.',
     mrpPaise: 11000,
+    batchTarget: 10,
     image: IMG('photo-1596797038530-2c107229654b'),
     category: 'Dosa',
     servingSize: '3 pieces',
@@ -102,6 +113,7 @@ export const menuItems = [
     description:
       'Thick rice pancake studded with onion, tomato and coriander. Hearty, and it keeps its heat.',
     mrpPaise: 12000,
+    batchTarget: 12,
     image: IMG('photo-1567337710282-00832b415979'),
     category: 'Uttapam',
     servingSize: 'Serves 1',
@@ -112,6 +124,7 @@ export const menuItems = [
     description:
       'Dosa brushed with ghee and gunpowder podi. Simple, rich, and the one people ask for by name.',
     mrpPaise: 14000,
+    batchTarget: 10,
     image: IMG('photo-1585032226651-759b368d7246'),
     category: 'Dosa',
     servingSize: 'Serves 1',
@@ -122,6 +135,7 @@ export const menuItems = [
     description:
       'Cooled rice folded through curd with mustard and curry leaf. What we cook when the afternoon is unbearable.',
     mrpPaise: 9000,
+    batchTarget: 15,
     image: IMG('photo-1601050690597-df0568f70950'),
     category: 'Rice',
     servingSize: 'Serves 1',
@@ -132,6 +146,7 @@ export const menuItems = [
     description:
       'Rice cooked down with lentils, tamarind and vegetables, finished with ghee. A complete meal in one box.',
     mrpPaise: 9500,
+    batchTarget: 15,
     image: IMG('photo-1604152135912-04a022e23696'),
     category: 'Rice',
     servingSize: 'Serves 1',

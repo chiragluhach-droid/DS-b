@@ -8,19 +8,23 @@ router.use(requireAuth, requireRole('admin'));
 
 router.get('/overview', controller.overview);
 router.get('/restaurants', controller.listRestaurants);
-router.patch('/restaurants/:id/approval', validate(controller.approvalSchema), controller.setRestaurantApproval);
+router.patch(
+  '/restaurants/:id/approval',
+  validate(controller.approvalSchema),
+  controller.setRestaurantApproval
+);
 router.get('/ngos', controller.listNgos);
 router.patch('/ngos/:id/approval', validate(controller.approvalSchema), controller.setNgoApproval);
 router.get('/users', controller.listUsers);
+router.patch('/users/:id/state', validate(controller.userStateSchema), controller.setUserState);
 router.get('/donations', controller.listDonations);
 router.get('/payments', controller.listPayments);
+router.get('/batches', controller.listBatches);
 router.patch(
-  '/batches/:batchId/discrepancy',
-  validate(controller.resolveDiscrepancySchema),
-  controller.resolveDiscrepancy
+  '/batches/:batchId/resolve',
+  validate(controller.resolveBatchSchema),
+  controller.resolveBatch
 );
 router.get('/audit-logs', controller.listAuditLogs);
-
-router.get('/batches', controller.listBatches);
 
 export default router;

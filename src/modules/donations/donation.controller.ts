@@ -1,21 +1,50 @@
 import { Request, Response } from 'express';
-import mongoose from 'mongoose';
+import { Types } from 'mongoose';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
 import { recordAudit } from '../../utils/audit';
-import { Donation, User, DONATION_STATUSES } from '../../models';
+import { Donation, DONATION_STATUSES, IDonation } from '../../models';
 import * as service from './donation.service';
 
 const POPULATE = [
-  { path: 'restaurant', select: 'name slug city address logoImage coverImage phone tagline' },
+  { path: 'restaurant', select: 'name slug address logoImage coverImage phone tagline' },
   { path: 'ngo', select: 'name slug logoImage address mission website' },
-  { path: 'items.batch', select: 'batchId targetQuantity collectedQuantity status' }
 ];
 
-async function actorFrom(req: Request) {
-  const user = await User.findById(req.user!.id).select('name role');
-  if (!user) throw ApiError.unauthorized();
-  return { id: user._id.toString(), role: user.role, name: user.name };
+/**
+ * The tracking page is public — anyone with the ID can open it — so the donor's
+ * contact details and internal references never leave the server with it.
+ */
+function publicDonation(donation: IDonation & { _id: Types.ObjectId }) {
+  return {
+    _id: donation._id,
+    donationId: donation.donationId,
+    restaurant: donation.restaurant,
+    ngo: donation.ngo,
+    items: donation.items.map((item) => ({
+      name: item.name,
+      image: item.image,
+      quantity: item.quantity,
+      mrpPaise: item.mrpPaise,
+      customerSharePercent: item.customerSharePercent,
+      lineCustomerPaise: item.lineCustomerPaise,
+      lineRestaurantPaise: item.lineRestaurantPaise,
+      lineFoodValuePaise: item.lineFoodValuePaise,
+    })),
+    totalPortions: donation.totalPortions,
+    customerPaidPaise: donation.customerPaidPaise,
+    restaurantContributionPaise: donation.restaurantContributionPaise,
+    totalFoodValuePaise: donation.totalFoodValuePaise,
+    status: donation.status,
+    isPaid: donation.isPaid,
+    timestamps_: donation.timestamps_,
+    createdAt: donation.createdAt,
+    donorSnapshot: {
+      name: donation.donorSnapshot.isAnonymous ? 'Anonymous donor' : donation.donorSnapshot.name,
+      isAnonymous: donation.donorSnapshot.isAnonymous,
+      message: donation.donorSnapshot.message,
+    },
+  };
 }
 
 export const create = asyncHandler(async (req: Request, res: Response) => {
@@ -34,51 +63,42 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json({
     success: true,
     data: {
-      donation: donation.toObject(),
+      donation: { donationId: donation.donationId, customerPaidPaise: donation.customerPaidPaise },
       restaurant: { name: restaurant.name, slug: restaurant.slug },
     },
   });
 });
 
-/** Public tracking — donation id alone is enough, it is unguessable and non-sequential. */
+/** Public tracking — the donation ID is the key, no account needed. */
 export const track = asyncHandler(async (req: Request, res: Response) => {
-  const donation = await Donation.findOne({ donationId: req.params.donationId })
-    .populate(POPULATE)
-    .lean();
+  const donation = await Donation.findOne({
+    donationId: req.params.donationId.trim().toUpperCase(),
+  }).populate(POPULATE);
   if (!donation) throw ApiError.notFound('We could not find a donation with that ID.');
 
-  const timeline = await service.getTimeline(donation._id as mongoose.Types.ObjectId);
-  const effectiveStatus = timeline.length > 0 ? timeline[timeline.length - 1].status : donation.status;
+  const [timeline, batches] = await Promise.all([
+    service.getTimeline(donation._id),
+    service.getDonationBatches(donation),
+  ]);
 
   res.json({
     success: true,
     data: {
-      donation: {
-        ...donation,
-        status: effectiveStatus,
-        // The tracking page is public — the donor's contact details never leave
-        // the server with it.
-        donorSnapshot: {
-          name: donation.donorSnapshot.isAnonymous
-            ? 'Anonymous donor'
-            : donation.donorSnapshot.name,
-          isAnonymous: donation.donorSnapshot.isAnonymous,
-          message: donation.donorSnapshot.message,
-        },
-      },
+      donation: publicDonation(donation),
       timeline,
+      batches,
       lifecycle: DONATION_STATUSES,
     },
   });
 });
 
+/**
+ * A donor's own history. Matched on the account that made the donation only —
+ * matching on a phone number or email would hand someone else's history to
+ * anyone who typed their number, since neither is verified.
+ */
 export const myDonations = asyncHandler(async (req: Request, res: Response) => {
-  const user = await User.findById(req.user!.id).select('email phone');
-  const match: Record<string, unknown>[] = [{ donor: req.user!.id }];
-  if (user?.email) match.push({ 'donorSnapshot.email': user.email });
-  if (user?.phone) match.push({ 'donorSnapshot.phone': user.phone });
-
-  const donations = await Donation.find({ $or: match })
+  const donations = await Donation.find({ donor: req.user!.id, isPaid: true })
     .populate(POPULATE)
     .sort({ createdAt: -1 })
     .limit(100)
@@ -86,54 +106,15 @@ export const myDonations = asyncHandler(async (req: Request, res: Response) => {
 
   const totals = donations.reduce(
     (acc, d) => {
-      if (!d.isPaid) return acc;
+      acc.count += 1;
       acc.portions += d.totalPortions;
       acc.customerPaidPaise += d.customerPaidPaise;
       acc.foodValuePaise += d.totalFoodValuePaise;
-      acc.count += 1;
-      if (d.status === 'ASSIGNED_TO_BATCH') acc.completed += 1;
+      if (d.status === 'NGO_CONFIRMED') acc.completed += 1;
       return acc;
     },
     { portions: 0, customerPaidPaise: 0, foodValuePaise: 0, count: 0, completed: 0 }
   );
 
   res.json({ success: true, data: { donations, totals } });
-});
-
-export const advance = asyncHandler(async (req: Request, res: Response) => {
-  const actor = await actorFrom(req);
-  const before = await Donation.findOne({ donationId: req.params.donationId }).select('status');
-
-  const donation = await service.advanceStatus(
-    req.params.donationId,
-    req.body.status,
-    actor,
-    req.body.note
-  );
-
-  await recordAudit({
-    req,
-    action: 'donation.status_change',
-    entityType: 'Donation',
-    entityId: donation.donationId,
-    before: { status: before?.status },
-    after: { status: donation.status },
-  });
-
-  res.json({ success: true, data: { donation } });
-});
-
-
-
-
-export const assignNgo = asyncHandler(async (req: Request, res: Response) => {
-  const donation = await service.assignNgo(req.params.donationId, req.body.ngoId);
-  await recordAudit({
-    req,
-    action: 'donation.assign_ngo',
-    entityType: 'Donation',
-    entityId: donation.donationId,
-    after: { ngo: req.body.ngoId },
-  });
-  res.json({ success: true, data: { donation } });
 });

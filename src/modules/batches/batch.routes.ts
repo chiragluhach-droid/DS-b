@@ -1,25 +1,28 @@
 import { Router } from 'express';
-import * as batchController from './batch.controller';
+import { validate } from '../../middleware/validate';
 import { requireAuth, requireRole } from '../../middleware/auth';
+import * as controller from './batch.controller';
 
 const router = Router();
 
-// Require user to be authenticated for all batch routes
 router.use(requireAuth);
 
-router.get('/restaurant', requireRole('restaurant', 'admin'), batchController.getRestaurantBatchesHandler);
-router.get('/ngo', requireRole('ngo', 'admin'), batchController.getNgoBatchesHandler);
+router.get('/restaurant', requireRole('restaurant', 'admin'), controller.listForRestaurant);
+router.get('/ngo', requireRole('ngo', 'admin'), controller.listForNgo);
+router.get('/:batchId', requireRole('restaurant', 'ngo', 'admin'), controller.detail);
 
 router.post(
   '/:batchId/dispatch',
   requireRole('restaurant', 'admin'),
-  batchController.dispatchBatchHandler
+  validate(controller.dispatchSchema),
+  controller.dispatch
 );
 
 router.post(
   '/:batchId/confirm',
   requireRole('ngo', 'admin'),
-  batchController.confirmBatchReceiptHandler
+  validate(controller.confirmSchema),
+  controller.confirm
 );
 
 export default router;
