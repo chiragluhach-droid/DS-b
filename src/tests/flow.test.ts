@@ -419,6 +419,38 @@ test('a short count is recorded as it stands and flagged for the admin', async (
   assert.match(after.body.data.batches[0].resolutionNote, /re-sent two plates/);
 });
 
+test('the dashboard tiles count the same batches the list shows', async () => {
+  const fx = await createFixture();
+
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.idli, quantity: 6 }]);
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 2 }]);
+
+  // The idli batch hit its target of 6; the dosa batch is still collecting.
+  const kitchen = await api('/batches/restaurant', { token: fx.restaurant.token });
+  assert.equal(kitchen.body.data.batches.length, 2);
+  assert.equal(kitchen.body.data.summary.readyToCook, 1);
+  assert.equal(kitchen.body.data.summary.collecting, 1);
+  assert.equal(kitchen.body.data.summary.portionsAwaitingDispatch, 8);
+
+  const ready = kitchen.body.data.batches.find(
+    (b: { status: string }) => b.status === 'READY_FOR_DELIVERY'
+  );
+  await api(`/batches/${ready.batchId}/dispatch`, { token: fx.restaurant.token, body: {} });
+
+  const ngo = await api('/batches/ngo', { token: fx.ngo.token });
+  assert.equal(ngo.body.data.summary.inTransit, 1);
+  assert.equal(ngo.body.data.summary.portionsInTransit, 6);
+
+  await api(`/batches/${ready.batchId}/confirm`, {
+    token: fx.ngo.token,
+    body: { receivedQuantity: 4, note: 'Two carriers were damaged.' },
+  });
+
+  const after = await api('/batches/ngo', { token: fx.ngo.token });
+  assert.equal(after.body.data.summary.flagged, 1);
+  assert.equal(after.body.data.summary.inTransit, 0);
+});
+
 test('a batch cannot be dispatched twice or confirmed before it is sent', async () => {
   const fx = await createFixture();
   await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 2 }]);

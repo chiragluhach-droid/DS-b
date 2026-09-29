@@ -38,10 +38,22 @@ const POPULATE = [
   { path: 'menuItem', select: 'name image category' },
 ];
 
+/**
+ * find() casts a string id to an ObjectId for you; an aggregation pipeline does
+ * not, and silently matches nothing instead. Casting here keeps the summary
+ * counts and the list they sit above reading from the same set of batches.
+ */
+function asId(value: Types.ObjectId | string, field: string): Types.ObjectId {
+  if (!Types.ObjectId.isValid(String(value))) {
+    throw ApiError.badRequest(`That ${field} id is not valid.`);
+  }
+  return new Types.ObjectId(String(value));
+}
+
 function scopeFilter(scope: BatchScope): Record<string, unknown> {
   const filter: Record<string, unknown> = {};
-  if (scope.restaurant) filter.restaurant = scope.restaurant;
-  if (scope.ngo) filter.ngo = scope.ngo;
+  if (scope.restaurant) filter.restaurant = asId(scope.restaurant, 'restaurant');
+  if (scope.ngo) filter.ngo = asId(scope.ngo, 'NGO');
   return filter;
 }
 
