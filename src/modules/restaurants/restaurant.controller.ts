@@ -17,6 +17,7 @@ import {
   DONATION_STATUSES,
 } from '../../models';
 import { batchSummary } from '../batches/batch.service';
+import { publicDonorSnapshot } from '../donations/donor-privacy';
 import { assignPendingDonations } from '../donations/donation.service';
 
 export const updateProfileSchema = z.object({
@@ -65,7 +66,13 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
   }).lean();
   if (!restaurant) throw ApiError.notFound('We could not find that restaurant.');
 
-  const items = await MenuItem.find({ restaurant: restaurant._id, isAvailable: true })
+  // Two gates: the kitchen says the dish is on today, DaanSetu says it is part
+  // of the pilot. A guest only sees what passes both.
+  const items = await MenuItem.find({
+    restaurant: restaurant._id,
+    isAvailable: true,
+    activeForDonation: true,
+  })
     .sort({ isSignature: -1, sortOrder: 1 })
     .lean();
 
@@ -116,11 +123,7 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
         totalPortions: d.totalPortions,
         totalFoodValuePaise: d.totalFoodValuePaise,
         createdAt: d.createdAt,
-        donorSnapshot: {
-          name: d.donorSnapshot.isAnonymous ? 'Anonymous' : d.donorSnapshot.name,
-          isAnonymous: d.donorSnapshot.isAnonymous,
-          message: d.donorSnapshot.message,
-        },
+        donorSnapshot: publicDonorSnapshot(d.donorSnapshot, 'Anonymous'),
       })),
     },
   });

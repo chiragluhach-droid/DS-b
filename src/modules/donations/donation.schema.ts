@@ -23,6 +23,13 @@ export const createDonationSchema = z.object({
       .transform((v) => v.replace(/[\s-]/g, '').replace(/^(\+91|0)/, ''))
       .refine((v) => /^[6-9]\d{9}$/.test(v), 'Enter a valid 10-digit Indian mobile number'),
     message: z.string().trim().max(400).optional().or(z.literal('')),
+    /**
+     * Publishing is opt-in and separate from giving a name: a donor may want
+     * their receipt in their own name and still not appear on a public page.
+     * Absent means no, which is what an unticked box sends.
+     */
+    consentPublicName: z.boolean().default(false),
+    consentPublicMessage: z.boolean().default(false),
   }),
 });
 

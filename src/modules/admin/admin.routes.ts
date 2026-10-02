@@ -15,6 +15,12 @@ router.patch(
 );
 router.get('/ngos', controller.listNgos);
 router.patch('/ngos/:id/approval', validate(controller.approvalSchema), controller.setNgoApproval);
+router.get('/restaurants/:id/menu', controller.listRestaurantMenu);
+router.patch(
+  '/menu-items/:itemId/pilot',
+  validate(controller.pilotItemSchema),
+  controller.setItemPilotState
+);
 router.get('/users', controller.listUsers);
 router.patch('/users/:id/state', validate(controller.userStateSchema), controller.setUserState);
 router.get('/donations', controller.listDonations);

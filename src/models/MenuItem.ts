@@ -17,6 +17,12 @@ export interface IMenuItem extends Document {
   isVeg: boolean;
   servingSize?: string;
   isAvailable: boolean;
+  /**
+   * Whether DaanSetu has approved this dish for the pilot. The kitchen controls
+   * isAvailable; only an admin changes this, and a guest can fund a dish only
+   * when both are true.
+   */
+  activeForDonation: boolean;
   isSignature: boolean;
   sortOrder: number;
   createdAt: Date;
@@ -46,6 +52,7 @@ const menuItemSchema = new Schema<IMenuItem>(
     isVeg: { type: Boolean, default: true },
     servingSize: { type: String },
     isAvailable: { type: Boolean, default: true },
+    activeForDonation: { type: Boolean, default: true, index: true },
     isSignature: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },
   },

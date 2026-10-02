@@ -111,6 +111,40 @@ async function backdateBatch(batchId: Types.ObjectId, openedAt: Date) {
   }
 }
 
+/**
+ * A donation's dispatch and receipt events belong to the batch, which moves days
+ * after the donation was funded. Stamping them from the funding time instead
+ * made the public timeline read backwards — receipt before payment.
+ */
+async function alignDonationEventsToBatch(
+  batchId: Types.ObjectId,
+  stamps: { dispatchedAt?: Date; receivedAt?: Date }
+) {
+  const byStatus: Record<string, Date | undefined> = {
+    DISPATCHED: stamps.dispatchedAt,
+    UNDER_REVIEW: stamps.receivedAt,
+    NGO_CONFIRMED: stamps.receivedAt,
+  };
+
+  const donations = await Donation.find({ 'items.batch': batchId }).select('timestamps_').lean();
+  for (const donation of donations) {
+    const applied: Record<string, Date> = {};
+    for (const [status, when] of Object.entries(byStatus)) {
+      if (!when) continue;
+      const result = await DonationEvent.collection.updateMany(
+        { donation: donation._id, status },
+        { $set: { createdAt: when } }
+      );
+      if (result.matchedCount > 0) applied[status] = when;
+    }
+    if (Object.keys(applied).length === 0) continue;
+    await Donation.collection.updateOne(
+      { _id: donation._id },
+      { $set: { timestamps_: { ...donation.timestamps_, ...applied } } }
+    );
+  }
+}
+
 /** Moves the dates a batch records for readiness, dispatch and receipt. */
 async function stampBatch(
   batchId: Types.ObjectId,
@@ -237,16 +271,32 @@ async function run() {
   });
 
   /* ----------------------------------------------------------------- menu */
+  /**
+   * The pilot runs a deliberately small menu: five dishes Dil Dosa has agreed to
+   * cook for the second service. The rest stay on the restaurant's list but are
+   * not approved for donation, so guests cannot fund them.
+   */
+  const PILOT_DISHES = new Set([
+    'Masala Dosa',
+    'Idli Sambhar',
+    'Paneer Dosa',
+    'Plain Dosa',
+    'Rava Dosa',
+  ]);
+
   const items = await MenuItem.insertMany(
     menuItems.map((item) => ({
       ...item,
       restaurant: restaurant._id,
       isVeg: true,
       isAvailable: true,
+      activeForDonation: PILOT_DISHES.has(item.name),
     }))
   );
   const itemByName = new Map(items.map((i) => [i.name, i]));
-  console.log(`  · donation menu created with ${items.length} dishes`);
+  console.log(
+    `  · menu created with ${items.length} dishes, ${PILOT_DISHES.size} approved for the pilot`
+  );
 
   /* ------------------------------------------------------------ donations */
   const restaurantActor: Actor = {
@@ -263,7 +313,13 @@ async function run() {
   async function donate(
     lines: { dish: string; quantity: number }[],
     when: Date,
-    options: { anonymous?: boolean; registered?: boolean; message?: string } = {}
+    options: {
+      anonymous?: boolean;
+      registered?: boolean;
+      message?: string;
+      /** Whether this donor agreed to their name and note being shown publicly. */
+      publish?: boolean;
+    } = {}
   ) {
     const donor = donorPool[donorIndex % donorPool.length];
     const message = options.message ?? donorMessages[donorIndex % donorMessages.length];
@@ -280,6 +336,10 @@ async function run() {
           name: options.anonymous ? '' : options.registered ? donorAccount.name : donor.name,
           phone: options.registered ? donorAccount.phone! : donor.phone,
           message,
+          // Most seeded donors agreed to be named; a couple deliberately did
+          // not, so the public wall shows both outcomes.
+          consentPublicName: !options.anonymous && options.publish !== false,
+          consentPublicMessage: !options.anonymous && options.publish !== false,
         },
       },
       options.registered ? donorAccount._id.toString() : undefined
@@ -326,7 +386,7 @@ async function run() {
 
   /* ---- 1. a batch that went all the way through, twelve days ago -------- */
   await donate([{ dish: 'Masala Dosa', quantity: 4 }], at(12, 9, 20), { registered: true });
-  await donate([{ dish: 'Masala Dosa', quantity: 6 }], at(11, 13, 5));
+  await donate([{ dish: 'Masala Dosa', quantity: 6 }], at(11, 13, 5), { publish: false });
   await donate([{ dish: 'Masala Dosa', quantity: 5 }], at(10, 10, 40), { anonymous: true });
   await donate([{ dish: 'Masala Dosa', quantity: 5 }], at(9, 12, 15));
 
@@ -350,10 +410,14 @@ async function run() {
     dispatchedAt: at(8, 9, 30),
     receivedAt: at(8, 11, 45),
   });
+  await alignDonationEventsToBatch(batch._id, {
+    dispatchedAt: at(8, 9, 30),
+    receivedAt: at(8, 11, 45),
+  });
   await backdateBatch(batch._id, at(12, 9, 20));
 
   /* ---- 2. a batch the NGO counted short — the flagged one --------------- */
-  await donate([{ dish: 'Idli Sambhar', quantity: 5 }], at(8, 8, 45));
+  await donate([{ dish: 'Idli Sambhar', quantity: 5 }], at(8, 8, 45), { publish: false });
   await donate([{ dish: 'Idli Sambhar', quantity: 4 }], at(7, 19, 10), {
     message: 'For the children’s programme — please send something soft.',
   });
@@ -378,6 +442,10 @@ async function run() {
     dispatchedAt: at(5, 9, 15),
     receivedAt: at(5, 11, 30),
   });
+  await alignDonationEventsToBatch(batch._id, {
+    dispatchedAt: at(5, 9, 15),
+    receivedAt: at(5, 11, 30),
+  });
   await backdateBatch(batch._id, at(8, 8, 45));
 
   /* ---- 3. a batch on its way, waiting on the NGO's count --------------- */
@@ -395,6 +463,7 @@ async function run() {
     'Sent with the 9:30 run — Parbhat to confirm the count on arrival.'
   );
   await stampBatch(batch._id, { readyAt: at(2, 10, 5), dispatchedAt: at(1, 9, 30) });
+  await alignDonationEventsToBatch(batch._id, { dispatchedAt: at(1, 9, 30) });
   await backdateBatch(batch._id, at(4, 12, 50));
 
   /* ---- 4. a full batch waiting for the kitchen to cook it -------------- */
@@ -408,13 +477,14 @@ async function run() {
   await donate(
     [
       { dish: 'Rava Dosa', quantity: 3 },
-      { dish: 'Curd Rice', quantity: 2 },
+      { dish: 'Plain Dosa', quantity: 2 },
     ],
     at(0, 11, 20),
     { message: 'Because our team closed a good quarter and this felt like the right way to mark it.' }
   );
   await donate([{ dish: 'Plain Dosa', quantity: 4 }], at(0, 12, 55));
   await backdateBatch((await batchFor('Plain Dosa'))._id, at(0, 9, 5));
+  await backdateBatch((await batchFor('Rava Dosa'))._id, at(0, 11, 20));
 
   console.log(`  · ${totals.donations} donations seeded across five batches`);
 

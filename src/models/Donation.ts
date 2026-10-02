@@ -35,6 +35,16 @@ export interface IDonation extends Document {
     email?: string;
     isAnonymous: boolean;
     message?: string;
+    /**
+     * Permission to show this donor's name or words in public. Absent or false
+     * means the donation appears as Anonymous with no note, whatever was typed.
+     */
+    consent: {
+      publicName: boolean;
+      publicMessage: boolean;
+      grantedAt?: Date;
+      policyVersion?: string;
+    };
   };
   items: IDonationItemSnapshot[];
   /** Total portions of food, i.e. the sum of item quantities. */
@@ -83,6 +93,12 @@ const donationSchema = new Schema<IDonation>(
       email: { type: String },
       isAnonymous: { type: Boolean, default: false },
       message: { type: String, maxlength: 400 },
+      consent: {
+        publicName: { type: Boolean, default: false },
+        publicMessage: { type: Boolean, default: false },
+        grantedAt: { type: Date },
+        policyVersion: { type: String },
+      },
     },
     items: { type: [snapshotSchema], required: true },
     totalPortions: { type: Number, required: true },

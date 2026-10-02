@@ -3,6 +3,7 @@ import {
   Batch,
   BatchEvent,
   BatchReceipt,
+  Donation,
   Ngo,
   BatchStatus,
   BATCH_STATUSES,
@@ -25,7 +26,7 @@ export interface BatchScope {
 }
 
 const STATUS_LABEL: Record<BatchStatus, string> = {
-  IN_PROGRESS: 'still collecting',
+  IN_PROGRESS: 'still collecting — it can be sent once it reaches its target',
   READY_FOR_DELIVERY: 'ready to cook',
   DISPATCHED: 'already on its way',
   RECONCILIATION_REQUIRED: 'flagged for review',
@@ -74,16 +75,39 @@ export async function listBatches(scope: BatchScope, status?: string, limit = 10
     .lean();
 }
 
+/**
+ * One batch with the operational detail an admin needs to settle a dispute: who
+ * moved it and when, and which donations are riding on it. Donor contact details
+ * are deliberately not included — the Donation ID is enough to act on.
+ */
 export async function getBatch(batchId: string, scope: BatchScope) {
   const batch = await Batch.findOne({ batchId, ...scopeFilter(scope) })
     .populate(POPULATE)
     .lean();
   if (!batch) throw ApiError.notFound('Batch not found.');
-  const events = await BatchEvent.find({ batch: batch._id })
-    .select('fromStatus toStatus actorType actorName note createdAt')
-    .sort({ createdAt: 1 })
-    .lean();
-  return { batch, events };
+
+  const [events, donationDocs] = await Promise.all([
+    BatchEvent.find({ batch: batch._id })
+      .select('fromStatus toStatus actorType actorName note createdAt')
+      .sort({ createdAt: 1 })
+      .lean(),
+    Donation.find({ 'items.batch': batch._id })
+      .select('donationId status items createdAt')
+      .sort({ createdAt: 1 })
+      .lean(),
+  ]);
+
+  const donations = donationDocs.map((d) => ({
+    donationId: d.donationId,
+    status: d.status,
+    createdAt: d.createdAt,
+    // Only the portions this batch is carrying, not the whole donation.
+    portions: d.items
+      .filter((item) => item.batch?.toString() === batch._id.toString())
+      .reduce((sum, item) => sum + item.quantity, 0),
+  }));
+
+  return { batch, events, donations };
 }
 
 /**
@@ -97,9 +121,13 @@ async function unavailableError(batchId: string, scope: BatchScope): Promise<Api
 }
 
 /**
- * The kitchen cooked the batch and handed it over. Everything collected goes
- * out, so the quantity is taken from the batch rather than typed in — the NGO's
- * count is the only number a human enters, and it is checked against this one.
+ * The kitchen cooked the batch and handed it over.
+ *
+ * Only a batch that has reached its target can go, which is what guests are
+ * promised on the donation page — a half-funded batch would send fewer portions
+ * than the people who funded it were told. Everything collected goes out, so the
+ * quantity is taken from the batch rather than typed in; the NGO's count is the
+ * only number a human enters, and it is checked against this one.
  */
 export async function dispatchBatch(
   batchId: string,
@@ -111,7 +139,7 @@ export async function dispatchBatch(
     {
       batchId,
       ...scopeFilter(scope),
-      status: { $in: OPEN_BATCH_STATUSES },
+      status: 'READY_FOR_DELIVERY',
       collectedQuantity: { $gt: 0 },
     },
     [
@@ -249,30 +277,50 @@ export async function resolveBatch(batchId: string, note: string, actor: Actor) 
   return batch;
 }
 
-/** Headline counts for the restaurant and NGO dashboards. */
+/**
+ * Headline counts for the restaurant and NGO dashboards.
+ *
+ * Funded, dispatched and received are three different numbers and are kept
+ * apart here: portions guests have paid for are not portions that have left the
+ * kitchen, and neither is proof of what the NGO actually counted.
+ */
 export async function batchSummary(scope: BatchScope) {
   const rows = await Batch.aggregate<{
     _id: BatchStatus;
     batches: number;
-    portions: number;
+    funded: number;
+    dispatched: number;
+    received: number;
   }>([
     { $match: scopeFilter(scope) },
     {
       $group: {
         _id: '$status',
         batches: { $sum: 1 },
-        portions: { $sum: '$collectedQuantity' },
+        funded: { $sum: '$collectedQuantity' },
+        dispatched: { $sum: '$dispatchedQuantity' },
+        received: { $sum: '$receivedQuantity' },
       },
     },
   ]);
 
-  const byStatus = Object.fromEntries(
-    BATCH_STATUSES.map((s) => [s, { batches: 0, portions: 0 }])
-  ) as Record<BatchStatus, { batches: number; portions: number }>;
+  const blank = { batches: 0, portions: 0, dispatched: 0, received: 0 };
+  const byStatus = Object.fromEntries(BATCH_STATUSES.map((s) => [s, { ...blank }])) as Record<
+    BatchStatus,
+    { batches: number; portions: number; dispatched: number; received: number }
+  >;
 
   rows.forEach((row) => {
-    byStatus[row._id] = { batches: row.batches, portions: row.portions };
+    byStatus[row._id] = {
+      batches: row.batches,
+      portions: row.funded,
+      dispatched: row.dispatched,
+      received: row.received,
+    };
   });
+
+  const sum = (pick: (s: BatchStatus) => number) =>
+    BATCH_STATUSES.reduce((total, status) => total + pick(status), 0);
 
   return {
     byStatus,
@@ -280,9 +328,14 @@ export async function batchSummary(scope: BatchScope) {
     readyToCook: byStatus.READY_FOR_DELIVERY.batches,
     inTransit: byStatus.DISPATCHED.batches,
     flagged: byStatus.RECONCILIATION_REQUIRED.batches,
+    /** Portions guests have paid for, wherever those portions have got to. */
+    portionsFunded: sum((s) => byStatus[s].portions),
     portionsAwaitingDispatch:
       byStatus.IN_PROGRESS.portions + byStatus.READY_FOR_DELIVERY.portions,
     portionsInTransit: byStatus.DISPATCHED.portions,
+    /** Portions that actually left a kitchen, and what an NGO counted on arrival. */
+    portionsDispatched: sum((s) => byStatus[s].dispatched),
+    portionsReceived: sum((s) => byStatus[s].received),
   };
 }
 

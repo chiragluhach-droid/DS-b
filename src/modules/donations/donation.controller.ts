@@ -4,6 +4,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { ApiError } from '../../utils/ApiError';
 import { recordAudit } from '../../utils/audit';
 import { Donation, DONATION_STATUSES, IDonation } from '../../models';
+import { publicDonorSnapshot } from './donor-privacy';
 import * as service from './donation.service';
 
 const POPULATE = [
@@ -39,11 +40,7 @@ function publicDonation(donation: IDonation & { _id: Types.ObjectId }) {
     isPaid: donation.isPaid,
     timestamps_: donation.timestamps_,
     createdAt: donation.createdAt,
-    donorSnapshot: {
-      name: donation.donorSnapshot.isAnonymous ? 'Anonymous donor' : donation.donorSnapshot.name,
-      isAnonymous: donation.donorSnapshot.isAnonymous,
-      message: donation.donorSnapshot.message,
-    },
+    donorSnapshot: publicDonorSnapshot(donation.donorSnapshot),
   };
 }
 

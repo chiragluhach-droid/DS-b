@@ -5,12 +5,18 @@ export type Role = (typeof ROLES)[number];
  * The donation lifecycle, in order. A donation is never moved by hand: payment
  * verification sets the first two steps, and every later step is derived from
  * the batches its dishes were cooked in (see donation.service syncDonationStatus).
+ *
+ * UNDER_REVIEW sits before NGO_CONFIRMED on purpose: when an NGO counts fewer
+ * portions than were sent, the donation stops there and says so. It only reaches
+ * NGO_CONFIRMED once every batch it is part of is closed — a receipt is evidence
+ * of arrival, never automatic proof that the food was served.
  */
 export const DONATION_STATUSES = [
   'PENDING_PAYMENT',
   'PAYMENT_SUCCESS',
   'ASSIGNED_TO_BATCH',
   'DISPATCHED',
+  'UNDER_REVIEW',
   'NGO_CONFIRMED',
 ] as const;
 export type DonationStatus = (typeof DONATION_STATUSES)[number];
@@ -49,8 +55,19 @@ export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 /**
  * The split is the platform's promise — the guest funds half a plate and the
  * kitchen funds the other half — so it is fixed here rather than set per dish.
+ *
+ * Rounding rule: the guest's share is rounded to the nearest paisa and the
+ * kitchen covers the remainder, so the two always sum to the menu price exactly.
+ * A ₹95 dish is ₹47.50 + ₹47.50, and is displayed to the paisa rather than
+ * rounded to whole rupees on each side (which would read as ₹48 + ₹48 = ₹96).
  */
 export const DEFAULT_CUSTOMER_SHARE_PERCENT = 50;
+
+/**
+ * Publishing a donor's name or message needs their explicit, unticked consent.
+ * The version is stored with each grant so a later policy change is auditable.
+ */
+export const PUBLIC_CONSENT_POLICY_VERSION = '2026-10-02';
 
 /** Portions a batch collects before it is marked ready, unless the dish sets its own. */
 export const DEFAULT_BATCH_TARGET = 40;

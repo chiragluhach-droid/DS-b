@@ -15,6 +15,7 @@ import {
   TERMINAL_STATUSES,
   RECEIVED_BATCH_STATUSES,
   DEFAULT_BATCH_TARGET,
+  PUBLIC_CONSENT_POLICY_VERSION,
   splitPrice,
   Role,
 } from '../../models';
@@ -45,6 +46,10 @@ const EVENT_COPY: Record<DonationStatus, { title: string; note: string }> = {
   DISPATCHED: {
     title: 'Cooked and sent',
     note: 'The kitchen cooked the batch and sent it to the NGO.',
+  },
+  UNDER_REVIEW: {
+    title: 'Receipt recorded with a shortfall — under review',
+    note: 'The NGO counted fewer portions than the kitchen sent. DaanSetu is reconciling the difference with both of them, and this page will say what was decided.',
   },
   NGO_CONFIRMED: {
     title: 'Confirmed by the NGO',
@@ -115,6 +120,7 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
     _id: { $in: itemIds },
     restaurant: restaurant._id,
     isAvailable: true,
+    activeForDonation: true,
   });
 
   if (menuItems.length !== new Set(itemIds).size) {
@@ -149,17 +155,30 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
   const customerPaidPaise = snapshots.reduce((sum, s) => sum + s.lineCustomerPaise, 0);
   const restaurantContributionPaise = snapshots.reduce((sum, s) => sum + s.lineRestaurantPaise, 0);
 
+  const name = input.donor.name?.trim();
+  const message = input.donor.message?.trim();
+  // A name is kept on the record either way; consent decides what is shown in
+  // public. No consent, or no name, means the donation appears as Anonymous.
+  const publicName = Boolean(name) && input.donor.consentPublicName;
+  const publicMessage = Boolean(message) && input.donor.consentPublicMessage;
+
   const donation = await Donation.create({
     donationId: generateDonationId(),
     restaurant: restaurant._id,
     ngo: await primaryPartnerNgoId(restaurant._id),
     donor: donorUserId,
     donorSnapshot: {
-      // No name given means the donor stays anonymous on the public wall.
-      name: input.donor.name?.trim() || 'Anonymous',
+      name: name || 'Anonymous',
       phone: input.donor.phone,
-      isAnonymous: !input.donor.name?.trim(),
-      message: input.donor.message || undefined,
+      isAnonymous: !publicName,
+      message: message || undefined,
+      consent: {
+        publicName,
+        publicMessage,
+        ...(publicName || publicMessage
+          ? { grantedAt: new Date(), policyVersion: PUBLIC_CONSENT_POLICY_VERSION }
+          : {}),
+      },
     },
     items: snapshots,
     totalPortions,
@@ -359,9 +378,14 @@ async function deriveStatus(donation: IDonation): Promise<DonationStatus> {
   const batches = await Batch.find({ _id: { $in: batchIds } }).select('status').lean();
   if (batches.length < batchIds.length) return 'ASSIGNED_TO_BATCH';
 
-  // A donation is only as far along as its least advanced dish.
+  /**
+   * A donation is only as far along as its least advanced dish, and a disputed
+   * receipt outranks a settled one — so a donation spanning two batches cannot
+   * read as confirmed while either batch is still collecting or under review.
+   */
   const ranks = batches.map((b) => {
-    if (RECEIVED_BATCH_STATUSES.includes(b.status)) return STATUS_INDEX.get('NGO_CONFIRMED')!;
+    if (b.status === 'COMPLETED') return STATUS_INDEX.get('NGO_CONFIRMED')!;
+    if (b.status === 'RECONCILIATION_REQUIRED') return STATUS_INDEX.get('UNDER_REVIEW')!;
     if (b.status === 'DISPATCHED') return STATUS_INDEX.get('DISPATCHED')!;
     return STATUS_INDEX.get('ASSIGNED_TO_BATCH')!;
   });
@@ -384,7 +408,18 @@ export async function syncDonationStatus(donationId: Types.ObjectId): Promise<ID
 
   while (currentIdx < targetIdx) {
     const from = DONATION_STATUSES[currentIdx];
-    const next = DONATION_STATUSES[currentIdx + 1];
+
+    /**
+     * Walk the steps the donation actually passed through. UNDER_REVIEW is the
+     * one step that is not on every path: a batch received in full goes straight
+     * from DISPATCHED to NGO_CONFIRMED, and must never be stamped "under review"
+     * on the way past.
+     */
+    let nextIdx = currentIdx + 1;
+    while (DONATION_STATUSES[nextIdx] === 'UNDER_REVIEW' && target !== 'UNDER_REVIEW') {
+      nextIdx += 1;
+    }
+    const next = DONATION_STATUSES[nextIdx];
 
     const moved = await Donation.findOneAndUpdate(
       { _id: donationId, status: from },
@@ -396,7 +431,7 @@ export async function syncDonationStatus(donationId: Types.ObjectId): Promise<ID
 
     donation = moved;
     await appendEvent({ donation: moved, status: next, ...(await actorFor(moved, next)) });
-    currentIdx += 1;
+    currentIdx = nextIdx;
   }
 
   return donation;
@@ -411,7 +446,7 @@ async function actorFor(
     const restaurant = await Restaurant.findById(donation.restaurant).select('name').lean();
     return { actorRole: 'restaurant', actorName: restaurant?.name ?? 'The kitchen' };
   }
-  if (status === 'NGO_CONFIRMED') {
+  if (status === 'NGO_CONFIRMED' || status === 'UNDER_REVIEW') {
     const ngo = await Ngo.findById(donation.ngo).select('name').lean();
     return { actorRole: 'ngo', actorName: ngo?.name ?? 'The NGO' };
   }

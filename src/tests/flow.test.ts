@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Batch, Donation, Restaurant, User } from '../models';
 import {
   api,
+  type ApiResponse,
   createFixture,
   donateAndPay,
   donationById,
@@ -22,21 +23,22 @@ beforeEach(resetDatabase);
 test('a paid donation joins a batch and the donor can follow it to the NGO', async () => {
   const fx = await createFixture();
 
+  // The dosa batch target is 10, and only a full batch may be sent.
   const donationId = await donateAndPay(fx.restaurant.slug, [
-    { menuItemId: fx.dishes.dosa, quantity: 4 },
+    { menuItemId: fx.dishes.dosa, quantity: 10 },
   ]);
 
   let donation = await donationById(donationId);
   assert.equal(donation?.status, 'ASSIGNED_TO_BATCH');
   assert.equal(donation?.isPaid, true);
   // ₹100 dish: guest pays ₹50, kitchen matches ₹50, ₹100 of food per portion.
-  assert.equal(donation?.customerPaidPaise, 20000);
-  assert.equal(donation?.restaurantContributionPaise, 20000);
-  assert.equal(donation?.totalFoodValuePaise, 40000);
+  assert.equal(donation?.customerPaidPaise, 50000);
+  assert.equal(donation?.restaurantContributionPaise, 50000);
+  assert.equal(donation?.totalFoodValuePaise, 100000);
 
   const batch = await Batch.findOne({ menuItem: fx.dishes.dosa }).lean();
-  assert.equal(batch?.collectedQuantity, 4);
-  assert.equal(batch?.status, 'IN_PROGRESS');
+  assert.equal(batch?.collectedQuantity, 10);
+  assert.equal(batch?.status, 'READY_FOR_DELIVERY');
   assert.equal(batch?.donationCount, 1);
 
   // The kitchen sends what it collected; the quantity is not typed in by hand.
@@ -45,14 +47,14 @@ test('a paid donation joins a batch and the donor can follow it to the NGO', asy
     body: { note: 'Sent with the morning run.' },
   });
   assert.equal(dispatched.status, 200);
-  assert.equal(dispatched.body.data.batch.dispatchedQuantity, 4);
+  assert.equal(dispatched.body.data.batch.dispatchedQuantity, 10);
 
   donation = await donationById(donationId);
   assert.equal(donation?.status, 'DISPATCHED');
 
   const confirmed = await api(`/batches/${batch!.batchId}/confirm`, {
     token: fx.ngo.token,
-    body: { receivedQuantity: 4 },
+    body: { receivedQuantity: 10 },
   });
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.data.batch.status, 'COMPLETED');
@@ -72,23 +74,58 @@ test('a paid donation joins a batch and the donor can follow it to the NGO', asy
   ]);
   const roles = tracked.body.data.timeline.map((e: { actorRole: string }) => e.actorRole);
   assert.deepEqual(roles, ['system', 'system', 'restaurant', 'ngo']);
-  assert.equal(tracked.body.data.batches[0].receivedQuantity, 4);
+  assert.equal(tracked.body.data.batches[0].receivedQuantity, 10);
+});
+
+test('the donor timeline never runs backwards', async () => {
+  const fx = await createFixture();
+  const donationId = await donateAndPay(fx.restaurant.slug, [
+    { menuItemId: fx.dishes.idli, quantity: 6 },
+  ]);
+  const batch = await Batch.findOne({}).lean();
+  await api(`/batches/${batch!.batchId}/dispatch`, { token: fx.restaurant.token, body: {} });
+  await api(`/batches/${batch!.batchId}/confirm`, {
+    token: fx.ngo.token,
+    body: { receivedQuantity: 6 },
+  });
+
+  const tracked = await api(`/donations/${donationId}/track`);
+  const events: { status: string; createdAt: string }[] = tracked.body.data.timeline;
+  const times = events.map((e) => new Date(e.createdAt).getTime());
+
+  assert.deepEqual(
+    events.map((e) => e.status),
+    ['PAYMENT_SUCCESS', 'ASSIGNED_TO_BATCH', 'DISPATCHED', 'NGO_CONFIRMED']
+  );
+  for (let i = 1; i < times.length; i += 1) {
+    assert.ok(
+      times[i] >= times[i - 1],
+      `${events[i].status} is stamped before ${events[i - 1].status}`
+    );
+  }
+
+  // The donation's own stamps agree with the events shown to the donor.
+  const stored = await donationById(donationId);
+  assert.ok(
+    new Date(stored!.timestamps_.DISPATCHED!).getTime() >=
+      new Date(stored!.timestamps_.PAYMENT_SUCCESS!).getTime()
+  );
 });
 
 test('a donation of two dishes is counted into one batch per dish', async () => {
   const fx = await createFixture();
 
   const donationId = await donateAndPay(fx.restaurant.slug, [
-    { menuItemId: fx.dishes.dosa, quantity: 3 },
-    { menuItemId: fx.dishes.idli, quantity: 2 },
+    { menuItemId: fx.dishes.dosa, quantity: 10 },
+    { menuItemId: fx.dishes.idli, quantity: 6 },
   ]);
 
   const dosaBatch = await Batch.findOne({ menuItem: fx.dishes.dosa }).lean();
   const idliBatch = await Batch.findOne({ menuItem: fx.dishes.idli }).lean();
 
-  // The bug this guards against put all five portions into the first dish's batch.
-  assert.equal(dosaBatch?.collectedQuantity, 3);
-  assert.equal(idliBatch?.collectedQuantity, 2);
+  // The bug this guards against put every portion into the first dish's batch.
+  assert.equal(dosaBatch?.collectedQuantity, 10);
+  assert.equal(idliBatch?.collectedQuantity, 6);
 
   const donation = await donationById(donationId);
   assert.equal(donation?.items.length, 2);
@@ -258,7 +295,7 @@ test('a kitchen cannot reach another kitchen’s batches by passing an id', asyn
 
 test('an NGO cannot confirm a batch that was not sent to it', async () => {
   const fx = await createFixture();
-  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 2 }]);
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 10 }]);
   const batch = await Batch.findOne({}).lean();
   await api(`/batches/${batch!.batchId}/dispatch`, { token: fx.restaurant.token, body: {} });
 
@@ -281,7 +318,7 @@ test('an NGO cannot confirm a batch that was not sent to it', async () => {
 
   const stolen = await api(`/batches/${batch!.batchId}/confirm?ngoId=${fx.ngo.id}`, {
     token: registered.body.data!.accessToken,
-    body: { receivedQuantity: 2 },
+    body: { receivedQuantity: 10 },
   });
   assert.equal(stolen.status, 404);
   assert.equal((await Batch.findById(batch!._id).lean())?.status, 'DISPATCHED');
@@ -341,7 +378,70 @@ test('the public tracking page never exposes the donor’s contact details', asy
   const raw = JSON.stringify(tracked.body);
   assert.ok(!raw.includes('9820099887'), 'phone number must not be in the response');
   assert.equal(tracked.body.data.donation.donorSnapshot.name, 'Anonymous donor');
-  assert.equal(tracked.body.data.donation.donorSnapshot.message, 'Anonymous gift');
+  // The note was typed but never released for publication.
+  assert.equal(tracked.body.data.donation.donorSnapshot.message, undefined);
+  assert.ok(!raw.includes('Anonymous gift'));
+});
+
+test('a name is not permission to publish it', async () => {
+  const fx = await createFixture();
+
+  const donate = async (donor: Record<string, unknown>) => {
+    const created = await api<{ donation: { donationId: string } }>('/donations', {
+      body: {
+        restaurantSlug: fx.restaurant.slug,
+        items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+        donor: { phone: '9820011223', ...donor },
+      },
+    });
+    const id = created.body.data!.donation.donationId;
+    const order = await api<{ orderId: string }>('/payments/order', { body: { donationId: id } });
+    await api('/payments/verify', {
+      body: {
+        donationId: id,
+        razorpayOrderId: order.body.data!.orderId,
+        razorpayPaymentId: 'pay_consent',
+        razorpaySignature: 'sig',
+      },
+    });
+    const tracked = await api(`/donations/${id}/track`);
+    return tracked.body.data.donation.donorSnapshot;
+  };
+
+  // A name typed at checkout, with no consent ticked.
+  const noConsent = await donate({ name: 'Ananya Rao', message: 'For Amma' });
+  assert.equal(noConsent.name, 'Anonymous donor');
+  assert.equal(noConsent.isAnonymous, true);
+  assert.equal(noConsent.message, undefined, 'a note needs its own consent');
+
+  // Consent to the name only.
+  const nameOnly = await donate({
+    name: 'Ananya Rao',
+    message: 'For Amma',
+    consentPublicName: true,
+  });
+  assert.equal(nameOnly.name, 'Ananya Rao');
+  assert.equal(nameOnly.message, undefined);
+
+  // Consent to both.
+  const both = await donate({
+    name: 'Ananya Rao',
+    message: 'For Amma',
+    consentPublicName: true,
+    consentPublicMessage: true,
+  });
+  assert.equal(both.name, 'Ananya Rao');
+  assert.equal(both.message, 'For Amma');
+
+  // An anonymous checkout stays anonymous even if consent is sent.
+  const anon = await donate({ name: '', consentPublicName: true });
+  assert.equal(anon.name, 'Anonymous donor');
+
+  // The public wall on the restaurant page follows the same rule.
+  const wall = await api(`/restaurants/${fx.restaurant.slug}`);
+  const names = wall.body.data.recentDonations.map((d: { donorSnapshot: { name: string } }) => d.donorSnapshot.name);
+  assert.equal(names.filter((n: string) => n === 'Ananya Rao').length, 2);
+  assert.equal(names.filter((n: string) => n === 'Anonymous').length, 2);
 });
 
 test('a form post is refused, so another site cannot act as a signed-in user', async () => {
@@ -397,10 +497,14 @@ test('a short count is recorded as it stands and flagged for the admin', async (
   assert.equal(short.body.data.batch.status, 'RECONCILIATION_REQUIRED');
   assert.equal(short.body.data.batch.receivedQuantity, 4);
 
-  // The donor is told, rather than the shortfall being hidden.
+  // A flagged batch must never read as served: the donation stops at
+  // UNDER_REVIEW until someone decides what actually happened.
   const tracked = await api(`/donations/${donationId}/track`);
-  assert.equal(tracked.body.data.donation.status, 'NGO_CONFIRMED');
+  assert.equal(tracked.body.data.donation.status, 'UNDER_REVIEW');
   assert.equal(tracked.body.data.batches[0].shortfall, true);
+  const steps = tracked.body.data.timeline.map((e: { status: string }) => e.status);
+  assert.ok(!steps.includes('NGO_CONFIRMED'), 'no success event while under review');
+  assert.ok(steps.includes('UNDER_REVIEW'));
 
   const flagged = await api('/admin/batches?status=RECONCILIATION_REQUIRED', {
     token: fx.admin.token,
@@ -415,8 +519,11 @@ test('a short count is recorded as it stands and flagged for the admin', async (
   assert.equal(resolved.status, 200);
   assert.equal(resolved.body.data.batch.status, 'COMPLETED');
 
+  // Resolving it closes the donation, and the shortfall stays on the record.
   const after = await api(`/donations/${donationId}/track`);
+  assert.equal(after.body.data.donation.status, 'NGO_CONFIRMED');
   assert.match(after.body.data.batches[0].resolutionNote, /re-sent two plates/);
+  assert.equal(after.body.data.batches[0].shortfall, true);
 });
 
 test('the dashboard tiles count the same batches the list shows', async () => {
@@ -451,14 +558,39 @@ test('the dashboard tiles count the same batches the list shows', async () => {
   assert.equal(after.body.data.summary.inTransit, 0);
 });
 
+test('funded, dispatched and received are reported as three separate numbers', async () => {
+  const fx = await createFixture();
+
+  // 10 dosa funded and sent, counted short at 8; 6 idli funded and still in the
+  // kitchen. Funded 16, dispatched 10, received 8.
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 10 }]);
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.idli, quantity: 6 }]);
+
+  const dosaBatch = await Batch.findOne({ menuItem: fx.dishes.dosa }).lean();
+  await api(`/batches/${dosaBatch!.batchId}/dispatch`, { token: fx.restaurant.token, body: {} });
+  await api(`/batches/${dosaBatch!.batchId}/confirm`, {
+    token: fx.ngo.token,
+    body: { receivedQuantity: 8, note: 'Two portions spoiled in transit.' },
+  });
+
+  const analytics = await api('/restaurants/me/analytics', { token: fx.restaurant.token });
+  const batches = analytics.body.data.batches;
+  assert.equal(batches.portionsFunded, 16);
+  assert.equal(batches.portionsDispatched, 10);
+  assert.equal(batches.portionsReceived, 8);
+
+  // The donation totals describe what was funded, which is a different number.
+  assert.equal(analytics.body.data.totals.portions, 16);
+});
+
 test('a batch cannot be dispatched twice or confirmed before it is sent', async () => {
   const fx = await createFixture();
-  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 2 }]);
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 10 }]);
   const batch = await Batch.findOne({}).lean();
 
   const early = await api(`/batches/${batch!.batchId}/confirm`, {
     token: fx.ngo.token,
-    body: { receivedQuantity: 2 },
+    body: { receivedQuantity: 10 },
   });
   assert.equal(early.status, 409);
 
@@ -472,10 +604,39 @@ test('a batch cannot be dispatched twice or confirmed before it is sent', async 
     body: {},
   });
   assert.equal(again.status, 409);
-  assert.equal((await Batch.findById(batch!._id).lean())?.dispatchedQuantity, 2);
+  assert.equal((await Batch.findById(batch!._id).lean())?.dispatchedQuantity, 10);
 });
 
 /* -------------------------------------------------------------- onboarding */
+
+test('a half-funded batch cannot be sent, however it is asked for', async () => {
+  const fx = await createFixture();
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 3 }]);
+  const batch = await Batch.findOne({}).lean();
+  assert.equal(batch?.status, 'IN_PROGRESS');
+
+  // The guest was promised the batch goes out once it is fully funded, so
+  // neither the kitchen nor an admin may send it early.
+  for (const token of [fx.restaurant.token, fx.admin.token]) {
+    const refused: ApiResponse = await api(`/batches/${batch!.batchId}/dispatch`, {
+      token,
+      body: {},
+    });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error!.message, /still collecting/i);
+  }
+  assert.equal((await Batch.findById(batch!._id).lean())?.status, 'IN_PROGRESS');
+
+  // Funding it the rest of the way is what releases it.
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 7 }]);
+  assert.equal((await Batch.findById(batch!._id).lean())?.status, 'READY_FOR_DELIVERY');
+  const sent = await api(`/batches/${batch!.batchId}/dispatch`, {
+    token: fx.restaurant.token,
+    body: {},
+  });
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.data.batch.dispatchedQuantity, 10);
+});
 
 test('a kitchen applies, waits for approval, then goes live', async () => {
   await createFixture();
@@ -569,6 +730,43 @@ test('a kitchen cannot partner with an NGO that is not approved', async () => {
   });
   assert.equal(refused.status, 400);
   assert.match(refused.body.error!.message, /not approved/i);
+});
+
+test('only dishes approved for the pilot can be funded', async () => {
+  const fx = await createFixture();
+
+  // An admin takes the idli off the pilot list.
+  const removed = await api(`/admin/menu-items/${fx.dishes.idli}/pilot`, {
+    method: 'PATCH',
+    token: fx.admin.token,
+    body: { activeForDonation: false },
+  });
+  assert.equal(removed.status, 200);
+
+  // It disappears from the page a guest scans into.
+  const page = await api(`/restaurants/${fx.restaurant.slug}`);
+  const names = page.body.data.items.map((i: { name: string }) => i.name);
+  assert.deepEqual(names, ['Masala Dosa']);
+
+  // And it cannot be funded by calling the API directly either.
+  const refused = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.idli, quantity: 1 }],
+      donor: { phone: '9820011223' },
+    },
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(await Donation.countDocuments({}), 0);
+
+  // Putting it back makes it selectable again.
+  await api(`/admin/menu-items/${fx.dishes.idli}/pilot`, {
+    method: 'PATCH',
+    token: fx.admin.token,
+    body: { activeForDonation: true },
+  });
+  const again = await api(`/restaurants/${fx.restaurant.slug}`);
+  assert.equal(again.body.data.items.length, 2);
 });
 
 test('a paused restaurant and an unavailable dish both refuse new donations', async () => {

@@ -11,6 +11,7 @@ import {
   Payment,
   AuditLog,
   Batch,
+  MenuItem,
   APPROVAL_STATUSES,
   DONATION_STATUSES,
   BATCH_STATUSES,
@@ -28,6 +29,10 @@ export const resolveBatchSchema = z.object({
 
 export const userStateSchema = z.object({
   isActive: z.boolean(),
+});
+
+export const pilotItemSchema = z.object({
+  activeForDonation: z.boolean(),
 });
 
 /** Escapes a user-typed search term so it is matched literally, not as a pattern. */
@@ -174,6 +179,34 @@ export const setNgoApproval = asyncHandler(async (req: Request, res: Response) =
     after: { approvalStatus: ngo.approvalStatus, note: req.body.note },
   });
   res.json({ success: true, data: { ngo } });
+});
+
+/** Every dish a kitchen offers, with whether it is approved for the pilot. */
+export const listRestaurantMenu = asyncHandler(async (req: Request, res: Response) => {
+  const items = await MenuItem.find({ restaurant: req.params.id })
+    .select('name category mrpPaise batchTarget isAvailable activeForDonation sortOrder')
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+  res.json({ success: true, data: { items } });
+});
+
+export const setItemPilotState = asyncHandler(async (req: Request, res: Response) => {
+  const item = await MenuItem.findByIdAndUpdate(
+    req.params.itemId,
+    { activeForDonation: req.body.activeForDonation },
+    { new: true }
+  ).select('name activeForDonation restaurant');
+  if (!item) throw ApiError.notFound('That dish does not exist.');
+
+  await recordAudit({
+    req,
+    action: req.body.activeForDonation ? 'menu_item.pilot_added' : 'menu_item.pilot_removed',
+    entityType: 'MenuItem',
+    entityId: item._id.toString(),
+    after: { name: item.name, activeForDonation: item.activeForDonation },
+  });
+
+  res.json({ success: true, data: { item } });
 });
 
 export const listUsers = asyncHandler(async (req: Request, res: Response) => {
