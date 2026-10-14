@@ -66,43 +66,51 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
   }).lean();
   if (!restaurant) throw ApiError.notFound('We could not find that restaurant.');
 
-  // Two gates: the kitchen says the dish is on today, Pradanam Sutra says it is part
-  // of the pilot. A guest only sees what passes both.
-  const items = await MenuItem.find({
-    restaurant: restaurant._id,
-    isAvailable: true,
-    activeForDonation: true,
-  })
-    .sort({ isSignature: -1, sortOrder: 1 })
-    .lean();
-
-  // Primary partner first — it is the NGO this kitchen's food actually goes to.
-  const partnerships = await RestaurantNgoRelationship.find({
-    restaurant: restaurant._id,
-    status: 'active',
-  })
-    .sort({ isPrimary: -1, createdAt: 1 })
-    .populate({
-      path: 'ngo',
-      select: 'name slug logoImage mission address beneficiaryFocus stats website',
+  /*
+   * These four only need the restaurant's id, not each other, so they go out
+   * together. Awaited one after another they cost four round trips to the
+   * database — and this is the page a guest lands on from the QR code, so it
+   * is the one that must not feel slow.
+   */
+  const [items, partnerships, recent, activeBatches] = await Promise.all([
+    // Two gates: the kitchen says the dish is on today, Pradanam Sutra says it
+    // is part of the pilot. A guest only sees what passes both.
+    MenuItem.find({
+      restaurant: restaurant._id,
+      isAvailable: true,
+      activeForDonation: true,
     })
-    .lean();
+      .sort({ isSignature: -1, sortOrder: 1 })
+      .lean(),
 
-  const recent = await Donation.find({ restaurant: restaurant._id, isPaid: true })
-    .sort({ createdAt: -1 })
-    .limit(6)
-    .select('donorSnapshot totalPortions totalFoodValuePaise createdAt')
-    .lean();
+    // Primary partner first — it is the NGO this kitchen's food actually goes to.
+    RestaurantNgoRelationship.find({
+      restaurant: restaurant._id,
+      status: 'active',
+    })
+      .sort({ isPrimary: -1, createdAt: 1 })
+      .populate({
+        path: 'ngo',
+        select: 'name slug logoImage mission address beneficiaryFocus stats website',
+      })
+      .lean(),
 
-  // How full each dish's current batch is — a guest can see they are completing
-  // someone else's batch rather than starting from nothing.
-  const activeBatches = await Batch.find({
-    restaurant: restaurant._id,
-    status: 'IN_PROGRESS',
-  })
-    .select('batchId menuItem itemName targetQuantity collectedQuantity')
-    .sort({ collectedQuantity: -1 })
-    .lean();
+    Donation.find({ restaurant: restaurant._id, isPaid: true })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .select('donorSnapshot totalPortions totalFoodValuePaise createdAt')
+      .lean(),
+
+    // How full each dish's current batch is — a guest can see they are
+    // completing someone else's batch rather than starting from nothing.
+    Batch.find({
+      restaurant: restaurant._id,
+      status: 'IN_PROGRESS',
+    })
+      .select('batchId menuItem itemName targetQuantity collectedQuantity')
+      .sort({ collectedQuantity: -1 })
+      .lean(),
+  ]);
 
   res.json({
     success: true,
