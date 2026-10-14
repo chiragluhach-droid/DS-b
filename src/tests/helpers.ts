@@ -16,6 +16,7 @@ import {
   Batch,
   BatchEvent,
   BatchReceipt,
+  DonorOtp,
 } from '../models';
 import { env } from '../config/env';
 import { generateQrToken, slugify } from '../utils/ids';
@@ -56,6 +57,7 @@ export async function resetDatabase(): Promise<void> {
       Batch,
       BatchEvent,
       BatchReceipt,
+      DonorOtp,
   ];
   await Promise.all(models.map((model) => model.deleteMany({})));
 }

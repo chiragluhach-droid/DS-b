@@ -119,6 +119,8 @@ const donationSchema = new Schema<IDonation>(
 );
 
 donationSchema.index({ createdAt: -1 });
+// A guest donor looks their history up by the number they gave at checkout.
+donationSchema.index({ 'donorSnapshot.phone': 1, createdAt: -1 });
 donationSchema.index({ 'items.batch': 1 });
 
 export const Donation = model<IDonation>('Donation', donationSchema);

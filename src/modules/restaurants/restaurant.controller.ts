@@ -66,7 +66,7 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
   }).lean();
   if (!restaurant) throw ApiError.notFound('We could not find that restaurant.');
 
-  // Two gates: the kitchen says the dish is on today, DaanSetu says it is part
+  // Two gates: the kitchen says the dish is on today, Pradanam Sutra says it is part
   // of the pilot. A guest only sees what passes both.
   const items = await MenuItem.find({
     restaurant: restaurant._id,
@@ -132,7 +132,7 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
 /** Resolves a scanned QR token to its restaurant slug. */
 export const resolveQr = asyncHandler(async (req: Request, res: Response) => {
   const restaurant = await Restaurant.findOne({ qrToken: req.params.token }).select('slug name');
-  if (!restaurant) throw ApiError.notFound('This QR code is not registered with DaanSetu.');
+  if (!restaurant) throw ApiError.notFound('This QR code is not registered with Pradanam Sutra.');
   res.json({ success: true, data: { slug: restaurant.slug, name: restaurant.name } });
 });
 
@@ -314,7 +314,7 @@ export const addPartner = asyncHandler(async (req: Request, res: Response) => {
   const ngo = await Ngo.findById(req.body.ngoId).select('name approvalStatus');
   if (!ngo) throw ApiError.notFound('NGO not found.');
   if (ngo.approvalStatus !== 'approved') {
-    throw ApiError.badRequest('That NGO is not approved on DaanSetu yet.');
+    throw ApiError.badRequest('That NGO is not approved on Pradanam Sutra yet.');
   }
 
   const existing = await RestaurantNgoRelationship.findOne({

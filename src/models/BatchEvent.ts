@@ -21,7 +21,7 @@ const batchEventSchema = new Schema<IBatchEvent>(
     toStatus: { type: String, enum: BATCH_STATUSES, required: true },
     actorType: { type: String, enum: [...ROLES, 'system'], required: true },
     actorId: { type: Schema.Types.ObjectId, ref: 'User' },
-    actorName: { type: String, default: 'DaanSetu' },
+    actorName: { type: String, default: 'Pradanam Sutra' },
     note: { type: String },
   },
   { timestamps: { createdAt: true, updatedAt: false } }

@@ -60,6 +60,19 @@ if (isProd && !paymentsAreLive && !allowMockPayments) {
   );
 }
 
+/**
+ * No SMS provider is wired up yet, so the code that unlocks a donor's history
+ * is handed back in the API response instead of being sent to the phone. That
+ * is a working demo and no protection at all, so production has to say so out
+ * loud rather than inherit it by accident.
+ */
+const allowDummyOtp = process.env.ALLOW_DUMMY_OTP === 'true';
+if (isProd && !allowDummyOtp) {
+  problems.push(
+    'ALLOW_DUMMY_OTP=true is required until an SMS provider is configured — until then the donation-history code is returned in the API response instead of being texted'
+  );
+}
+
 const sameSite = process.env.COOKIE_SAMESITE?.toLowerCase();
 if (sameSite && !['lax', 'strict', 'none'].includes(sameSite)) {
   problems.push('COOKIE_SAMESITE must be one of lax, strict, none');
@@ -95,6 +108,7 @@ export const env = {
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
   razorpay,
   allowMockPayments,
+  allowDummyOtp,
 };
 
 if (problems.length > 0) {

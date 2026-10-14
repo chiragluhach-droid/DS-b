@@ -6,6 +6,7 @@ import { recordAudit } from '../../utils/audit';
 import { Donation, DONATION_STATUSES, IDonation } from '../../models';
 import { publicDonorSnapshot } from './donor-privacy';
 import * as service from './donation.service';
+import { issueOtp, consumeOtp, otpIsDummy } from './donor-history.service';
 
 const POPULATE = [
   { path: 'restaurant', select: 'name slug address logoImage coverImage phone tagline' },
@@ -95,7 +96,45 @@ export const track = asyncHandler(async (req: Request, res: Response) => {
  * anyone who typed their number, since neither is verified.
  */
 export const myDonations = asyncHandler(async (req: Request, res: Response) => {
-  const donations = await Donation.find({ donor: req.user!.id, isPaid: true })
+  res.json({ success: true, data: await historyFor({ donor: req.user!.id }) });
+});
+
+/**
+ * A guest donation carries no account, so the mobile number given at checkout
+ * is the only handle on it. Handing a history out on a typed number alone
+ * would let anyone read anyone's, so the number is proved first: this issues
+ * the code, and donorHistory below spends it.
+ *
+ * The reply says nothing about whether that number has ever donated. Telling
+ * an unknown number apart from a known one would turn this into a way to find
+ * out who gives.
+ */
+export const requestHistoryOtp = asyncHandler(async (req: Request, res: Response) => {
+  const { phone } = req.body as { phone: string };
+  const { code, expiresAt } = await issueOtp(phone);
+
+  res.json({
+    success: true,
+    data: {
+      expiresAt,
+      // No SMS provider yet, so the code comes back here instead of to the
+      // phone. config/env refuses to boot production without an explicit
+      // opt-in, so this cannot go live unnoticed.
+      ...(otpIsDummy ? { demoCode: code } : {}),
+    },
+  });
+});
+
+/** Every donation made under a mobile number, once that number is proved. */
+export const donorHistory = asyncHandler(async (req: Request, res: Response) => {
+  const { phone, code } = req.body as { phone: string; code: string };
+  await consumeOtp(phone, code);
+  res.json({ success: true, data: await historyFor({ 'donorSnapshot.phone': phone }) });
+});
+
+/** The shape both histories return: the donations, newest first, and a tally. */
+async function historyFor(match: Record<string, unknown>) {
+  const donations = await Donation.find({ ...match, isPaid: true })
     .populate(POPULATE)
     .sort({ createdAt: -1 })
     .limit(100)
@@ -113,5 +152,5 @@ export const myDonations = asyncHandler(async (req: Request, res: Response) => {
     { portions: 0, customerPaidPaise: 0, foodValuePaise: 0, count: 0, completed: 0 }
   );
 
-  res.json({ success: true, data: { donations, totals } });
-});
+  return { donations, totals };
+}

@@ -11,3 +11,4 @@ export * from './AuditLog';
 export * from './Batch';
 export * from './BatchEvent';
 export * from './BatchReceipt';
+export * from './DonorOtp';

@@ -14,7 +14,7 @@ import { User, hashPassword } from '../models';
 async function run() {
   const email = (process.env.ADMIN_EMAIL ?? '').trim().toLowerCase();
   const password = process.env.ADMIN_PASSWORD ?? '';
-  const name = process.env.ADMIN_NAME ?? 'DaanSetu Admin';
+  const name = process.env.ADMIN_NAME ?? 'Pradanam Sutra Admin';
 
   if (!email || !password) {
     throw new Error('Set ADMIN_EMAIL and ADMIN_PASSWORD to create the first admin.');

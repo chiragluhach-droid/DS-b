@@ -49,7 +49,7 @@ const EVENT_COPY: Record<DonationStatus, { title: string; note: string }> = {
   },
   UNDER_REVIEW: {
     title: 'Receipt recorded with a shortfall — under review',
-    note: 'The NGO counted fewer portions than the kitchen sent. DaanSetu is reconciling the difference with both of them, and this page will say what was decided.',
+    note: 'The NGO counted fewer portions than the kitchen sent. Pradanam Sutra is reconciling the difference with both of them, and this page will say what was decided.',
   },
   NGO_CONFIRMED: {
     title: 'Confirmed by the NGO',
@@ -75,7 +75,7 @@ export async function appendEvent({
   note,
   actorId,
   actorRole = 'system',
-  actorName = 'DaanSetu',
+  actorName = 'Pradanam Sutra',
   metadata,
 }: AppendEventArgs) {
   const copy = EVENT_COPY[status as DonationStatus];
@@ -109,7 +109,7 @@ export async function createDonation(input: CreateDonationInput, donorUserId?: s
   const restaurant = await Restaurant.findOne({ slug: input.restaurantSlug });
   if (!restaurant) throw ApiError.notFound('We could not find that restaurant.');
   if (restaurant.approvalStatus !== 'approved') {
-    throw ApiError.badRequest('This restaurant is not yet live on DaanSetu.');
+    throw ApiError.badRequest('This restaurant is not yet live on Pradanam Sutra.');
   }
   if (!restaurant.isAcceptingDonations) {
     throw ApiError.badRequest('This restaurant has paused donations for now.');
@@ -450,7 +450,7 @@ async function actorFor(
     const ngo = await Ngo.findById(donation.ngo).select('name').lean();
     return { actorRole: 'ngo', actorName: ngo?.name ?? 'The NGO' };
   }
-  return { actorRole: 'system', actorName: 'DaanSetu' };
+  return { actorRole: 'system', actorName: 'Pradanam Sutra' };
 }
 
 /** Re-syncs every donation that has food in a batch. Called after the batch moves. */

@@ -161,7 +161,7 @@ async function run() {
   }
 
   await connectDatabase();
-  console.log(`\n  Seeding DaanSetu → ${mongoose.connection.name}\n`);
+  console.log(`\n  Seeding Pradanam Sutra → ${mongoose.connection.name}\n`);
   await wipe();
 
   const passwordHash = await hashPassword(PASSWORD);

@@ -18,7 +18,7 @@ export interface IMenuItem extends Document {
   servingSize?: string;
   isAvailable: boolean;
   /**
-   * Whether DaanSetu has approved this dish for the pilot. The kitchen controls
+   * Whether Pradanam Sutra has approved this dish for the pilot. The kitchen controls
    * isAvailable; only an admin changes this, and a guest can fund a dish only
    * when both are true.
    */

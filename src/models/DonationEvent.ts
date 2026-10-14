@@ -23,7 +23,7 @@ const donationEventSchema = new Schema<IDonationEvent>(
     note: { type: String },
     actor: { type: Schema.Types.ObjectId, ref: 'User' },
     actorRole: { type: String, enum: [...ROLES, 'system'], default: 'system' },
-    actorName: { type: String, default: 'DaanSetu' },
+    actorName: { type: String, default: 'Pradanam Sutra' },
     metadata: { type: Schema.Types.Mixed },
   },
   { timestamps: { createdAt: true, updatedAt: false } }

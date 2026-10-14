@@ -1,6 +1,6 @@
 import test, { before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { Batch, Donation, Restaurant, User } from '../models';
+import { Batch, Donation, DonorOtp, Restaurant, User } from '../models';
 import {
   api,
   type ApiResponse,
@@ -814,4 +814,107 @@ test('prices and the split come from the database, not the request', async () =>
   assert.equal(donation?.isPaid, false);
   assert.equal(donation?.status, 'PENDING_PAYMENT');
   assert.equal(donation?.totalFoodValuePaise, 10000);
+});
+
+/* ----------------------------------------------- a guest donor's own history */
+
+/** Asks for a code and returns it. Delivery is the demo one, so it comes back. */
+async function requestCode(phone: string): Promise<string> {
+  const res = await api<{ demoCode?: string }>('/donations/history/otp', { body: { phone } });
+  assert.equal(res.status, 200);
+  assert.ok(res.body.data?.demoCode, 'the demo build hands the code back');
+  return res.body.data!.demoCode!;
+}
+
+test('a verified number opens that donor\'s donations and nobody else\'s', async () => {
+  const fx = await createFixture();
+
+  const mine = await donateAndPay(
+    fx.restaurant.slug,
+    [{ menuItemId: fx.dishes.dosa, quantity: 2 }],
+    { name: 'Asha', phone: '9820011223' }
+  );
+  await donateAndPay(
+    fx.restaurant.slug,
+    [{ menuItemId: fx.dishes.idli, quantity: 3 }],
+    { name: 'Someone else', phone: '9811122233' }
+  );
+
+  const code = await requestCode('9820011223');
+  const res = await api<{ donations: { donationId: string }[]; totals: { portions: number; count: number } }>(
+    '/donations/history',
+    { body: { phone: '9820011223', code } }
+  );
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(
+    res.body.data!.donations.map((d) => d.donationId),
+    [mine],
+    'only the donations made on that number'
+  );
+  assert.equal(res.body.data!.totals.portions, 2);
+  assert.equal(res.body.data!.totals.count, 1);
+});
+
+test('the number is matched however it was typed', async () => {
+  const fx = await createFixture();
+  const donationId = await donateAndPay(
+    fx.restaurant.slug,
+    [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+    { phone: '9820011223' }
+  );
+
+  // Donated as ten bare digits, looked up with a country code and spaces.
+  const code = await requestCode('+91 98200 11223');
+  const res = await api<{ donations: { donationId: string }[] }>('/donations/history', {
+    body: { phone: '+91 98200 11223', code },
+  });
+
+  assert.deepEqual(res.body.data!.donations.map((d) => d.donationId), [donationId]);
+});
+
+test('a history does not open without the right code, and a code is spent once', async () => {
+  const fx = await createFixture();
+  await donateAndPay(fx.restaurant.slug, [{ menuItemId: fx.dishes.dosa, quantity: 1 }], {
+    phone: '9820011223',
+  });
+
+  const code = await requestCode('9820011223');
+
+  const wrong = await api('/donations/history', {
+    body: { phone: '9820011223', code: code === '000000' ? '111111' : '000000' },
+  });
+  assert.equal(wrong.status, 400);
+  assert.equal(wrong.body.error?.code, 'OTP_INVALID');
+
+  const first = await api('/donations/history', { body: { phone: '9820011223', code } });
+  assert.equal(first.status, 200);
+
+  // The same code must not open it a second time.
+  const replay = await api('/donations/history', { body: { phone: '9820011223', code } });
+  assert.equal(replay.status, 400);
+  assert.equal(replay.body.error?.code, 'OTP_EXPIRED');
+});
+
+test('asking for a code says nothing about whether that number has ever donated', async () => {
+  await createFixture();
+
+  const unknown = await api('/donations/history/otp', { body: { phone: '9876501234' } });
+  assert.equal(unknown.status, 200, 'an unknown number is answered exactly like a known one');
+
+  // It is a real code for a real number, so it opens an empty history.
+  const code = await requestCode('9876501234');
+  const res = await api<{ donations: unknown[] }>('/donations/history', {
+    body: { phone: '9876501234', code },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.data!.donations, []);
+});
+
+test('only a hash of the code is stored', async () => {
+  const code = await requestCode('9820011223');
+  const stored = await DonorOtp.findOne({ phone: '9820011223' }).lean();
+  assert.ok(stored, 'a code was issued');
+  assert.notEqual(stored!.codeHash, code);
+  assert.ok(stored!.expiresAt.getTime() > Date.now());
 });
