@@ -177,11 +177,11 @@ async function run() {
 
   /* ----------------------------------------------------------- restaurant */
   const restaurant = await Restaurant.create({
-    name: 'Dil Dosa',
+    name: 'Dil Dosa Etc.',
     slug: RESTAURANT_SLUG,
     tagline: 'One griddle at Park Street Market, running a second service every morning.',
     description:
-      'Dil Dosa has been at Park Street Market since 2016 — one griddle, two cooks, and a queue that starts at seven. Order a dish on this page and you pay half its menu price; we put in the other half and cook it fresh the next morning. The food goes to Parbhat - An Awakening NGO before noon, and they confirm every plate they receive.',
+      'Dil Dosa Etc. has been at Park Street Market since 2016 — one griddle, two cooks, and a queue that starts at seven. Order a dish on this page and you pay half its menu price; we put in the other half and cook it fresh the next morning. The food goes to Parbhat - An Awakening NGO before noon, and they confirm every plate they receive.',
     cuisine: ['South Indian', 'Vegetarian', 'Dosa'],
     email: 'kitchen@dildosa.in',
     phone: '1294058811',
@@ -258,7 +258,7 @@ async function run() {
     isPrimary: true,
     note: 'Daily noon handover. Food must leave the kitchen by 11:30am.',
   });
-  console.log('  · Dil Dosa and Parbhat created, partnered and approved');
+  console.log('  · Dil Dosa Etc. and Parbhat created, partnered and approved');
 
   /* ---------------------------------------------------------------- donor */
   // A registered donor so the "My donations" page has a history to show.
@@ -523,11 +523,11 @@ async function run() {
    Seed complete.
 
    Guests paid       ${rupees(totals.customer)}
-   Dil Dosa matched  ${rupees(totals.kitchen)}
+   Dil Dosa Etc. matched  ${rupees(totals.kitchen)}
    Food donated      ${rupees(totals.food)}  (${totals.portions} portions)
 
    Waiting for someone:
-     ${readyToCook} batch ready for Dil Dosa to cook
+     ${readyToCook} batch ready for Dil Dosa Etc. to cook
      ${inTransit} batch with Parbhat to count
      ${flagged} batch flagged for the admin to resolve
 

@@ -3,7 +3,7 @@ const IMG = (id: string, w = 900) =>
 
 export const images = {
   // Served from frontend/public — a real photo of the dining room.
-  restaurantCover: '/dil-dosa.jpg',
+  restaurantCover: '/dil-dosa-cover.jpg',
   restaurantLogo: IMG('photo-1630383249896-424e482df921', 400),
   ngoLogo: IMG('photo-1488521787991-ed7bbaae773c', 400),
   ngoCover: IMG('photo-1594708767771-a7502209ff51', 1600),
