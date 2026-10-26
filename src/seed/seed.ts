@@ -30,7 +30,7 @@ import { images, menuItems, donorPool, donorMessages } from './data';
  * dashboards, charts and timelines read like a fortnight of real service.
  */
 
-const PASSWORD = 'DaanSetu@2026';
+const PASSWORD = 'PradanamSutra@2026';
 const RESTAURANT_SLUG = 'dil-dosa';
 
 const HOUR = 60 * 60 * 1000;
@@ -169,7 +169,7 @@ async function run() {
   /* ---------------------------------------------------------------- admin */
   const admin = await User.create({
     name: 'Chirag Luhach',
-    email: 'admin@daansetu.in',
+    email: 'admin@pradanamsutra.org',
     phone: '9000000001',
     passwordHash,
     role: 'admin',
@@ -242,7 +242,7 @@ async function run() {
 
   const ngoOwner = await User.create({
     name: 'Sunita Bhardwaj',
-    email: 'parbhat@daansetu.in',
+    email: 'parbhat@pradanamsutra.org',
     phone: '9716517040',
     passwordHash,
     role: 'ngo',
@@ -264,7 +264,7 @@ async function run() {
   // A registered donor so the "My donations" page has a history to show.
   const donorAccount = await User.create({
     name: 'Ananya Rao',
-    email: 'donor@daansetu.in',
+    email: 'donor@pradanamsutra.org',
     phone: donorPool[0].phone,
     passwordHash,
     role: 'customer',
@@ -533,10 +533,10 @@ async function run() {
 
    Sign in with password:  ${PASSWORD}
 
-     Admin        admin@daansetu.in
+     Admin        admin@pradanamsutra.org
      Restaurant   kitchen@dildosa.in
-     NGO          parbhat@daansetu.in
-     Donor        donor@daansetu.in
+     NGO          parbhat@pradanamsutra.org
+     Donor        donor@pradanamsutra.org
 
    Guest entry point:  /restaurant/${RESTAURANT_SLUG}
    Tracking sample:    /track/${sample?.donationId ?? '—'}

@@ -9,7 +9,7 @@ import { User, hashPassword } from '../models';
  * production — restaurants and NGOs then apply through the web app and this
  * admin approves them.
  *
- *   ADMIN_EMAIL=you@daansetu.in ADMIN_PASSWORD='…' npm run bootstrap
+ *   ADMIN_EMAIL=you@pradanamsutra.org ADMIN_PASSWORD='…' npm run bootstrap
  */
 async function run() {
   const email = (process.env.ADMIN_EMAIL ?? '').trim().toLowerCase();
