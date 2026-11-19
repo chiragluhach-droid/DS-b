@@ -42,21 +42,42 @@ function resolveMongoUri(): { uri: string; usingFallback: boolean } {
 
 const mongo = resolveMongoUri();
 
+// --- Cashfree ----------------------------------------------------------------
+const cashfree = {
+  appId: process.env.CASHFREE_APP_ID ?? '',
+  secretKey: process.env.CASHFREE_SECRET_KEY ?? '',
+  /** 'sandbox' | 'production' — defaults to 'sandbox' when absent. */
+  environment: (process.env.CASHFREE_ENV ?? 'sandbox') as 'sandbox' | 'production',
+};
+
+// Legacy Razorpay values (kept so existing mock-mode tests still boot)
 const razorpay = {
   keyId: process.env.RAZORPAY_KEY_ID ?? '',
   keySecret: process.env.RAZORPAY_KEY_SECRET ?? '',
   webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET ?? '',
 };
 
-/** When Razorpay keys are absent the platform runs a self-contained mock gateway. */
-export const paymentsAreLive = Boolean(razorpay.keyId && razorpay.keySecret);
+/**
+ * Payments are live when Cashfree credentials are configured.
+ * Falls back to checking legacy Razorpay keys for backwards compat.
+ */
+export const paymentsAreLive =
+  !isTest && Boolean((cashfree.appId && cashfree.secretKey) || (razorpay.keyId && razorpay.keySecret));
+
+/** Which live gateway is configured. */
+export const liveGateway: 'cashfree' | 'razorpay' | null =
+  !isTest && cashfree.appId && cashfree.secretKey
+    ? 'cashfree'
+    : !isTest && razorpay.keyId && razorpay.keySecret
+      ? 'razorpay'
+      : null;
 
 // Mock payments accept any signature. That is the point locally and a free
 // donation button in production, so production needs an explicit opt-in.
 const allowMockPayments = process.env.ALLOW_MOCK_PAYMENTS === 'true';
 if (isProd && !paymentsAreLive && !allowMockPayments) {
   problems.push(
-    'RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be set (or ALLOW_MOCK_PAYMENTS=true for a demo deployment)'
+    'CASHFREE_APP_ID and CASHFREE_SECRET_KEY (or RAZORPAY_KEY_ID/KEY_SECRET) must be set (or ALLOW_MOCK_PAYMENTS=true for a demo deployment)'
   );
 }
 
@@ -106,6 +127,7 @@ export const env = {
    */
   cookieSameSite: sameSite as 'lax' | 'strict' | 'none' | undefined,
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
+  cashfree,
   razorpay,
   allowMockPayments,
   allowDummyOtp,

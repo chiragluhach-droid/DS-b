@@ -230,9 +230,7 @@ export async function donateAndPay(
   const verified = await api('/payments/verify', {
     body: {
       donationId,
-      razorpayOrderId: order.body.data.orderId,
-      razorpayPaymentId: 'pay_test_1',
-      razorpaySignature: 'test_signature',
+      orderId: order.body.data.orderId,
     },
   });
   if (!verified.body.success) throw new Error(`Verify failed: ${verified.body.error?.message}`);

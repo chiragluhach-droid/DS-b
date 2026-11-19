@@ -174,9 +174,7 @@ test('verifying the same payment twice counts the donation once', async () => {
 
   const payload = {
     donationId,
-    razorpayOrderId: order.body.data!.orderId,
-    razorpayPaymentId: 'pay_test_dup',
-    razorpaySignature: 'test_signature',
+    orderId: order.body.data!.orderId,
   };
 
   // The browser returning and the webhook arriving at the same moment.
@@ -242,9 +240,7 @@ test('a payment cannot be verified against a different donation', async () => {
   const stolen = await api('/payments/verify', {
     body: {
       donationId: second.body.data!.donation.donationId,
-      razorpayOrderId: cheapOrder.body.data!.orderId,
-      razorpayPaymentId: 'pay_test_x',
-      razorpaySignature: 'test_signature',
+      orderId: cheapOrder.body.data!.orderId,
     },
   });
 
@@ -399,9 +395,7 @@ test('a name is not permission to publish it', async () => {
     await api('/payments/verify', {
       body: {
         donationId: id,
-        razorpayOrderId: order.body.data!.orderId,
-        razorpayPaymentId: 'pay_consent',
-        razorpaySignature: 'sig',
+        orderId: order.body.data!.orderId,
       },
     });
     const tracked = await api(`/donations/${id}/track`);

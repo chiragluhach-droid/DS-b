@@ -1,15 +1,19 @@
 import { createApp } from './app';
 import { connectDatabase } from './config/db';
-import { env, paymentsAreLive } from './config/env';
+import { env, paymentsAreLive, liveGateway } from './config/env';
 
 async function bootstrap() {
   await connectDatabase();
   const app = createApp();
 
+  const payLabel = paymentsAreLive
+    ? `${liveGateway} (${liveGateway === 'cashfree' ? env.cashfree.environment : 'live keys'})`
+    : 'MOCK mode';
+
   app.listen(env.port, () => {
     // eslint-disable-next-line no-console
     console.log(
-      `\n  Pradanam Sutra API\n  → http://localhost:${env.port}/api/health\n  → payments: ${paymentsAreLive ? 'razorpay (live keys)' : 'MOCK mode'}\n  → cors: ${env.corsOrigins.join(', ')}\n`
+      `\n  Pradanam Sutra API\n  → http://localhost:${env.port}/api/health\n  → payments: ${payLabel}\n  → cors: ${env.corsOrigins.join(', ')}\n`
     );
   });
 }

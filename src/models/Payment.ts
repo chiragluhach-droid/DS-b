@@ -4,8 +4,10 @@ import { PAYMENT_STATUSES, PaymentStatus } from './types';
 export interface IPayment extends Document {
   _id: Types.ObjectId;
   donation: Types.ObjectId;
-  provider: 'razorpay' | 'mock';
+  provider: 'cashfree' | 'razorpay' | 'mock';
   orderId: string;
+  /** Cashfree payment_session_id — sent to the frontend to launch checkout. */
+  paymentSessionId?: string;
   paymentId?: string;
   signature?: string;
   amountPaise: number;
@@ -22,8 +24,9 @@ export interface IPayment extends Document {
 const paymentSchema = new Schema<IPayment>(
   {
     donation: { type: Schema.Types.ObjectId, ref: 'Donation', required: true, index: true },
-    provider: { type: String, enum: ['razorpay', 'mock'], default: 'mock' },
+    provider: { type: String, enum: ['cashfree', 'razorpay', 'mock'], default: 'mock' },
     orderId: { type: String, required: true, index: true },
+    paymentSessionId: { type: String },
     paymentId: { type: String, index: true },
     signature: { type: String },
     amountPaise: { type: Number, required: true },

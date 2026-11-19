@@ -8,9 +8,7 @@ export const createOrderSchema = z.object({ donationId: z.string().min(1) });
 
 export const verifySchema = z.object({
   donationId: z.string().min(1),
-  razorpayOrderId: z.string().min(1),
-  razorpayPaymentId: z.string().min(1),
-  razorpaySignature: z.string().min(1),
+  orderId: z.string().min(1),
 });
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -34,8 +32,9 @@ export const verify = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const webhook = asyncHandler(async (req: Request, res: Response) => {
-  const signature = req.get('x-razorpay-signature') ?? '';
-  const result = await service.handleWebhook(req.body as Buffer, signature);
+  const signature = req.get('x-webhook-signature') ?? '';
+  const timestamp = req.get('x-webhook-timestamp') ?? '';
+  const result = await service.handleWebhook(req.body as Buffer, signature, timestamp);
   res.json({ success: true, data: result });
 });
 
