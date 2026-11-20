@@ -33,4 +33,8 @@ router.patch(
 );
 router.get('/audit-logs', controller.listAuditLogs);
 
+// The platform-wide switch for giving.
+router.get('/settings', controller.getSettings);
+router.patch('/settings', validate(controller.settingsSchema), controller.setSettings);
+
 export default router;

@@ -20,6 +20,7 @@ import {
   Role,
 } from '../../models';
 import { ApiError } from '../../utils/ApiError';
+import { assertDonationsOpen } from '../../models/PlatformSettings';
 import { generateBatchId, generateDonationId } from '../../utils/ids';
 import { CreateDonationInput } from './donation.schema';
 
@@ -106,6 +107,11 @@ export async function primaryPartnerNgoId(
 }
 
 export async function createDonation(input: CreateDonationInput, donorUserId?: string) {
+  // The platform switch is checked before the kitchen's own: when an admin has
+  // closed giving, the reason is the platform's, not the restaurant's, and the
+  // guest should be told that rather than blamed on the kitchen.
+  await assertDonationsOpen();
+
   const restaurant = await Restaurant.findOne({ slug: input.restaurantSlug });
   if (!restaurant) throw ApiError.notFound('We could not find that restaurant.');
   if (restaurant.approvalStatus !== 'approved') {

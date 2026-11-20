@@ -1,6 +1,6 @@
 import test, { before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { Batch, Donation, DonorOtp, Restaurant, User } from '../models';
+import { Batch, Donation, DonorOtp, PlatformSettings, Restaurant, User } from '../models';
 import {
   api,
   type ApiResponse,
@@ -911,4 +911,140 @@ test('only a hash of the code is stored', async () => {
   assert.ok(stored, 'a code was issued');
   assert.notEqual(stored!.codeHash, code);
   assert.ok(stored!.expiresAt.getTime() > Date.now());
+});
+
+/* --------------------------------------------- the platform-wide giving tap */
+
+/** Closes giving the way the admin endpoint does, without going through HTTP. */
+async function closeDonations(note?: string) {
+  await PlatformSettings.findOneAndUpdate(
+    { key: 'platform' },
+    { key: 'platform', donationsEnabled: false, donationsPausedNote: note },
+    { upsert: true }
+  );
+}
+
+test('with giving closed the site still serves, but nothing new can be started', async () => {
+  const fx = await createFixture();
+  await closeDonations();
+
+  // The menu is still readable — the site stays up, only giving stops.
+  const page = await api(`/restaurants/${fx.restaurant.slug}`);
+  assert.equal(page.status, 200);
+  assert.ok(page.body.data.items.length > 0, 'the dishes are still listed');
+  assert.equal(page.body.data.donationsEnabled, false, 'and the page is told why');
+
+  const attempt = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+      donor: { name: 'Asha', phone: '9820011223' },
+    },
+  });
+  assert.equal(attempt.status, 503);
+  assert.equal(attempt.body.error?.code, 'DONATIONS_PAUSED');
+});
+
+test('a donation started before the tap closed cannot still open a payment', async () => {
+  const fx = await createFixture();
+
+  const created = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+      donor: { name: 'Asha', phone: '9820011223' },
+    },
+  });
+  assert.equal(created.status, 201);
+
+  await closeDonations();
+
+  const order = await api('/payments/order', {
+    body: { donationId: created.body.data.donation.donationId },
+  });
+  assert.equal(order.status, 503, 'the payment door is shut too');
+  assert.equal(order.body.error?.code, 'DONATIONS_PAUSED');
+});
+
+test('the admin note is what a guest is told', async () => {
+  const fx = await createFixture();
+  await closeDonations('Back on Monday morning.');
+
+  const attempt = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+      donor: { name: 'Asha', phone: '9820011223' },
+    },
+  });
+  assert.equal(attempt.body.error?.message, 'Back on Monday morning.');
+});
+
+test('giving is open on a database that has never heard of the switch', async () => {
+  const fx = await createFixture();
+  assert.equal(await PlatformSettings.countDocuments({}), 0, 'nothing seeded it');
+
+  const created = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+      donor: { name: 'Asha', phone: '9820011223' },
+    },
+  });
+  assert.equal(created.status, 201, 'defaults to open');
+});
+
+test('an admin can close and reopen giving, and both are on the record', async () => {
+  const fx = await createFixture();
+  const token = fx.admin.token;
+
+  const closed = await api('/admin/settings', {
+    method: 'PATCH',
+    token,
+    body: { donationsEnabled: false, donationsPausedNote: 'Paused for the festival.' },
+  });
+  assert.equal(closed.status, 200);
+  assert.equal(closed.body.data.settings.donationsEnabled, false);
+
+  const blocked = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+      donor: { name: 'Asha', phone: '9820011223' },
+    },
+  });
+  assert.equal(blocked.status, 503);
+
+  const reopened = await api('/admin/settings', {
+    method: 'PATCH',
+    token,
+    body: { donationsEnabled: true },
+  });
+  assert.equal(reopened.body.data.settings.donationsEnabled, true);
+
+  const allowed = await api('/donations', {
+    body: {
+      restaurantSlug: fx.restaurant.slug,
+      items: [{ menuItemId: fx.dishes.dosa, quantity: 1 }],
+      donor: { name: 'Asha', phone: '9820011223' },
+    },
+  });
+  assert.equal(allowed.status, 201);
+
+  const logs = await api('/admin/audit-logs?entityType=PlatformSettings', { token });
+  const actions = logs.body.data.logs.map((l: { action: string }) => l.action);
+  assert.ok(actions.includes('platform.donations_closed'));
+  assert.ok(actions.includes('platform.donations_opened'));
+});
+
+test('only an admin can touch the tap', async () => {
+  const fx = await createFixture();
+  const kitchen = fx.restaurant.token;
+
+  const attempt = await api('/admin/settings', {
+    method: 'PATCH',
+    token: kitchen,
+    body: { donationsEnabled: false },
+  });
+  assert.equal(attempt.status, 403);
 });

@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Donation, Payment, IDonation } from '../../models';
 import { env, paymentsAreLive, liveGateway } from '../../config/env';
 import { ApiError } from '../../utils/ApiError';
+import { assertDonationsOpen } from '../../models/PlatformSettings';
 import { generateToken } from '../../utils/ids';
 import { markDonationPaid } from '../donations/donation.service';
 
@@ -62,6 +63,11 @@ function sameSignature(expected: string, provided: string): boolean {
 // ---------------------------------------------------------------------------
 
 export async function createOrder(donationId: string) {
+  // Belt and braces: a donation created a moment before the switch was thrown
+  // must not still be able to open a payment. Verification is deliberately not
+  // gated — someone who has already been charged must get their donation.
+  await assertDonationsOpen();
+
   const donation = await Donation.findOne({ donationId: donationId.trim().toUpperCase() });
   if (!donation) throw ApiError.notFound('Donation not found.');
   if (donation.isPaid) throw ApiError.conflict('This donation has already been paid for.');

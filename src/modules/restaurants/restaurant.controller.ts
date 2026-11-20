@@ -19,6 +19,7 @@ import {
 import { batchSummary } from '../batches/batch.service';
 import { publicDonorSnapshot } from '../donations/donor-privacy';
 import { assignPendingDonations } from '../donations/donation.service';
+import { getPlatformSettings } from '../../models/PlatformSettings';
 
 export const updateProfileSchema = z.object({
   name: z.string().trim().min(2).max(140).optional(),
@@ -112,10 +113,16 @@ export const getPublicBySlug = asyncHandler(async (req: Request, res: Response) 
       .lean(),
   ]);
 
+  // The donate page needs to know before it renders an Add button it would
+  // only have to refuse.
+  const { donationsEnabled, donationsPausedNote } = await getPlatformSettings();
+
   res.json({
     success: true,
     data: {
       restaurant,
+      donationsEnabled,
+      donationsPausedNote,
       items,
       partners: partnerships.map((p) => p.ngo).filter(Boolean),
       activeBatches: activeBatches.map((b) => ({

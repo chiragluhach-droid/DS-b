@@ -15,6 +15,8 @@ import {
   APPROVAL_STATUSES,
   DONATION_STATUSES,
   BATCH_STATUSES,
+  getPlatformSettings,
+  PlatformSettings,
 } from '../../models';
 import * as batchService from '../batches/batch.service';
 
@@ -318,4 +320,51 @@ export const listAuditLogs = asyncHandler(async (req: Request, res: Response) =>
   if (action) query.action = searchRegex(action);
   const logs = await AuditLog.find(query).sort({ createdAt: -1 }).limit(200).lean();
   res.json({ success: true, data: { logs } });
+});
+
+/* ------------------------------------------------------------- settings */
+
+export const settingsSchema = z.object({
+  donationsEnabled: z.boolean(),
+  /** Optional: what a guest is told while giving is closed. */
+  donationsPausedNote: z.string().trim().max(240).optional().or(z.literal('')),
+});
+
+export const getSettings = asyncHandler(async (_req: Request, res: Response) => {
+  res.json({ success: true, data: { settings: await getPlatformSettings() } });
+});
+
+/**
+ * The master tap. Turning it off leaves the site up — menus, tracking, every
+ * dashboard — and closes only the two doors that take money. It is written to
+ * the audit log either way: knowing when giving was closed, and by whom, is
+ * the first question anyone asks about a gap in the donations.
+ */
+export const setSettings = asyncHandler(async (req: Request, res: Response) => {
+  const before = await getPlatformSettings();
+  const { donationsEnabled, donationsPausedNote } = req.body as {
+    donationsEnabled: boolean;
+    donationsPausedNote?: string;
+  };
+
+  const settings = await PlatformSettings.findOneAndUpdate(
+    { key: 'platform' },
+    {
+      donationsEnabled,
+      donationsPausedNote: donationsPausedNote?.trim() || undefined,
+      updatedBy: req.user!.id,
+    },
+    { upsert: true, new: true }
+  );
+
+  await recordAudit({
+    req,
+    action: donationsEnabled ? 'platform.donations_opened' : 'platform.donations_closed',
+    entityType: 'PlatformSettings',
+    entityId: 'platform',
+    before: { donationsEnabled: before.donationsEnabled },
+    after: { donationsEnabled, donationsPausedNote: settings!.donationsPausedNote },
+  });
+
+  res.json({ success: true, data: { settings } });
 });
